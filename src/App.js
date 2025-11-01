@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Trash2, Edit2, LogOut, Users, DollarSign, TrendingUp, TrendingDown, X, BookOpen, Key, Lock, Cloud, RefreshCw, Download, Upload } from 'lucide-react';
+import {
+  Plus, Trash2, Edit2, LogOut, Users, DollarSign, TrendingUp,
+  TrendingDown, X, BookOpen, Key, Lock, Cloud, RefreshCw, Upload
+} from 'lucide-react';
 import { API } from './config';
 
 const App = () => {
+  // --- core state
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([
     { id: 1, username: 'PARTHI', password: 'parthi123', role: 'admin', name: 'Parthi' },
@@ -11,10 +15,14 @@ const App = () => {
   const [payments, setPayments] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
+  const [backups, setBackups] = useState([]);
+  const [lastBackup, setLastBackup] = useState(null);
+
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showModal, setShowModal] = useState(false);
   const [modalType, setModalType] = useState('');
   const [editingItem, setEditingItem] = useState(null);
+
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -22,91 +30,128 @@ const App = () => {
   const [resetUsername, setResetUsername] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // forms
   const [formData, setFormData] = useState({
-    type: 'in',
-    handledBy: '',
-    customerSupplier: '',
-    amount: '',
-    method: 'Cash',
-    category: '',
-    notes: '',
-    date: new Date().toISOString().split('T')[0]
+    type: 'in', handledBy: '', customerSupplier: '', amount: '', method: 'Cash',
+    category: '', notes: '', date: new Date().toISOString().split('T')[0]
   });
-
   const [newUser, setNewUser] = useState({ username: '', password: '', name: '' });
   const [newMaster, setNewMaster] = useState({ name: '', phone: '', address: '', gst: '' });
 
   const paymentMethods = ['Cash', 'Bank Transfer', 'UPI'];
   const payoutCategories = ['Supplier', 'Salary', 'Savings', 'Share', 'Expenses', 'Transport', 'Extra'];
 
-  // backup info
-  const [lastBackup, setLastBackup] = useState(null);
+  // auto-backup interval ref
   const autoBackupRef = useRef(null);
 
-  useEffect(() => {
-    loadData();
-    // set auto backup interval (every 24 hours)
-    autoBackupRef.current = setInterval(() => {
-      try {
-        runAutoBackup();
-      } catch (e) {
-        console.error('Auto backup error:', e);
-      }
-    }, 24 * 60 * 60 * 1000); // 24 hours
-    return () => {
-      clearInterval(autoBackupRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ----------------------
-  // Helper API wrappers
-  // ----------------------
-  // save full array robustly: try bulk mode first, else fallback to per-item
+  // ---------------------------
+  // Helper: API wrappers
+  // ---------------------------
+  // Try bulk save; if backend doesn't support it, fallback to per-item saves.
   const saveFullTable = async (table, items) => {
     try {
-      // try bulk-save hint (your backend may support it)
+      // If backend supports bulk, try a bulk payload - your API may interpret __bulk
       const bulkPayload = { __bulk: true, items };
-      const resp = await API.saveData(table, bulkPayload);
-      // if backend signals failure, fallback
-      if (resp && resp.error) throw new Error(resp.error);
-      // If backend returned success for bulk, good.
-      return resp;
+      const bulkResp = await API.saveData(table, bulkPayload);
+      // if bulkResp indicates success (depends on your API design)
+      if (bulkResp && !bulkResp.error) {
+        // re-fetch the table to confirm
+        await refreshTable(table);
+        return bulkResp;
+      } else {
+        // fallthrough to item-by-item
+        throw new Error('Bulk save not supported or returned error');
+      }
     } catch (err) {
-      console.warn(`Bulk save failed for ${table}, falling back to item-by-item.`, err);
-      // fallback: delete-and-recreate or upsert each item via individual saves
-      const results = [];
+      console.warn(`Bulk save failed for ${table}, falling back:`, err);
+      // fallback: save every item individually (upsert)
       for (const item of items) {
         try {
-          // save each item individually
-          const r = await API.saveData(table, item);
-          results.push(r);
+          await API.saveData(table, item);
         } catch (e) {
-          console.error(`Failed to save item to ${table}:`, e);
+          console.error(`Failed saving item to ${table}:`, e);
         }
       }
-      return results;
+      await refreshTable(table);
+      return { success: true };
     }
   };
 
   const fetchTable = async (table) => {
     try {
-      const data = await API.getData(table);
-      return data || [];
-    } catch (error) {
-      console.error(`Error fetching ${table}:`, error);
+      const result = await API.getData(table);
+      // normalize to array
+      if (!result) return [];
+      return Array.isArray(result) ? result : [result];
+    } catch (err) {
+      console.error(`fetchTable ${table} error:`, err);
       return [];
     }
   };
 
-  // ----------------------
-  // Loading & Saving
-  // ----------------------
-  const loadData = async () => {
+  // fetch & set states for specific tables
+  const refreshTable = async (table) => {
+    if (table === 'kpm-users') {
+      const u = await fetchTable('kpm-users');
+      if (Array.isArray(u) && u.length > 0) setUsers(u);
+      return u;
+    }
+    if (table === 'kpm-payments') {
+      const p = await fetchTable('kpm-payments');
+      // ensure array and sort newest first
+      const sorted = (p || []).slice().sort((a, b) => {
+        const ta = a.timestamp ? new Date(a.timestamp).getTime() : new Date(a.date || 0).getTime();
+        const tb = b.timestamp ? new Date(b.timestamp).getTime() : new Date(b.date || 0).getTime();
+        return tb - ta;
+      });
+      setPayments(sorted);
+      return sorted;
+    }
+    if (table === 'kpm-customers') {
+      const c = await fetchTable('kpm-customers');
+      setCustomers(c || []);
+      return c;
+    }
+    if (table === 'kpm-suppliers') {
+      const s = await fetchTable('kpm-suppliers');
+      setSuppliers(s || []);
+      return s;
+    }
+    if (table === 'kpm-backups') {
+      const b = await fetchTable('kpm-backups');
+      // sort by timestamp desc
+      const sorted = (b || []).slice().sort((a, b) => {
+        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return tb - ta;
+      });
+      setBackups(sorted);
+      setLastBackup(sorted[0] || null);
+      return sorted;
+    }
+    return [];
+  };
+
+  // ---------------------------
+  // Load initial data
+  // ---------------------------
+  useEffect(() => {
+    (async () => {
+      await initialLoad();
+      // schedule daily auto-backup (24h)
+      autoBackupRef.current = setInterval(() => {
+        runAutoBackup().catch(e => console.error('Auto backup error:', e));
+      }, 24 * 60 * 60 * 1000);
+    })();
+    return () => clearInterval(autoBackupRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const initialLoad = async () => {
     try {
       setLoading(true);
-      // Load all tables
-      const [usersData, paymentsData, customersData, suppliersData, backupsData] = await Promise.all([
+      // load everything in parallel
+      const [u, p, c, s, b] = await Promise.all([
         fetchTable('kpm-users'),
         fetchTable('kpm-payments'),
         fetchTable('kpm-customers'),
@@ -114,134 +159,159 @@ const App = () => {
         fetchTable('kpm-backups')
       ]);
 
-      // Keep default admins if no users on backend
-      if (Array.isArray(usersData) && usersData.length > 0) {
-        setUsers(usersData);
-      } // else keep default admins already in state
-
-      if (Array.isArray(paymentsData)) setPayments(paymentsData);
-      if (Array.isArray(customersData)) setCustomers(customersData);
-      if (Array.isArray(suppliersData)) setSuppliers(suppliersData);
-
-      // determine last backup
-      if (Array.isArray(backupsData) && backupsData.length > 0) {
-        // assume backupsData entries have timestamp or backup_id
-        const sorted = backupsData
-          .map(b => ({ ...b, _ts: b.timestamp ? new Date(b.timestamp).getTime() : 0 }))
-          .sort((a, b) => b._ts - a._ts);
-        setLastBackup(sorted[0]);
+      if (Array.isArray(u) && u.length > 0) setUsers(u);
+      if (Array.isArray(p)) {
+        const sorted = p.slice().sort((a, b) => {
+          const ta = a.timestamp ? new Date(a.timestamp).getTime() : new Date(a.date || 0).getTime();
+          const tb = b.timestamp ? new Date(b.timestamp).getTime() : new Date(b.date || 0).getTime();
+          return tb - ta;
+        });
+        setPayments(sorted);
       }
-      // run immediate auto-backup check (if needed)
-      await runAutoBackup(); // non-blocking safety, will check internally
-    } catch (error) {
-      console.error('Error loading data from AWS API:', error);
+      if (Array.isArray(c)) setCustomers(c);
+      if (Array.isArray(s)) setSuppliers(s);
+
+      if (Array.isArray(b)) {
+        const sortedB = b.slice().sort((x, y) => {
+          const tx = x.timestamp ? new Date(x.timestamp).getTime() : 0;
+          const ty = y.timestamp ? new Date(y.timestamp).getTime() : 0;
+          return ty - tx;
+        });
+        setBackups(sortedB);
+        setLastBackup(sortedB[0] || null);
+      }
+
+      // run immediate auto backup check
+      await runAutoBackup();
+    } catch (e) {
+      console.error('initialLoad error:', e);
     } finally {
       setLoading(false);
     }
   };
 
-  // core saveData: will try to upsert arrays to backend
-  const saveData = async (newUsers, newPayments, newCustomers, newSuppliers) => {
-    try {
-      // Users
-      if (newUsers && Array.isArray(newUsers)) {
-        await saveFullTable('kpm-users', newUsers);
-      }
-      // Payments
-      if (newPayments && Array.isArray(newPayments)) {
-        await saveFullTable('kpm-payments', newPayments);
-      }
-      // Customers
-      if (newCustomers && Array.isArray(newCustomers)) {
-        await saveFullTable('kpm-customers', newCustomers);
-      }
-      // Suppliers
-      if (newSuppliers && Array.isArray(newSuppliers)) {
-        await saveFullTable('kpm-suppliers', newSuppliers);
-      }
-    } catch (error) {
-      console.error('Error saving data to AWS API:', error);
-    }
-  };
-
-  // ----------------------
-  // Backup functions
-  // ----------------------
+  // ---------------------------
+  // Backup features
+  // ---------------------------
   const createBackupPayload = () => {
     const now = new Date();
-    const iso = now.toISOString();
-    const id = now.toISOString().split('T')[0] + '-' + now.getTime();
-    return {
-      backup_id: id,
-      timestamp: iso,
+    const payload = {
+      backup_id: now.toISOString().replace(/[:.]/g, '-'),
+      timestamp: now.toISOString(),
       users,
       payments,
       customers,
       suppliers
     };
+    return payload;
   };
 
   const manualBackup = async () => {
     try {
       const payload = createBackupPayload();
-      const resp = await API.saveData('kpm-backups', payload);
-      setLastBackup(payload);
-      alert('Manual backup completed successfully.');
-      return resp;
-    } catch (error) {
-      console.error('Manual backup failed:', error);
-      alert('Manual backup failed. Check console for details.');
+      await API.saveData('kpm-backups', payload);
+      // verify by re-reading backups
+      const saved = await refreshTable('kpm-backups');
+      const found = Array.isArray(saved) ? saved.filter(b => b.backup_id === payload.backup_id) : [];
+      if (found.length > 0) {
+        setLastBackup(found[0]);
+        alert(`Manual backup completed and verified. Total backups: ${saved.length}`);
+      } else {
+        alert('Manual backup attempted but could not be verified. Check logs.');
+      }
+    } catch (err) {
+      console.error('manualBackup error:', err);
+      alert('Manual backup failed. See console for details.');
     }
   };
 
   const runAutoBackup = async () => {
     try {
-      // fetch latest backups meta
-      const backups = await fetchTable('kpm-backups');
+      const existing = await fetchTable('kpm-backups');
       let latestTs = 0;
-      if (Array.isArray(backups) && backups.length > 0) {
-        backups.forEach(b => {
-          if (b.timestamp) {
-            const t = new Date(b.timestamp).getTime();
-            if (t > latestTs) latestTs = t;
-          }
+      if (Array.isArray(existing) && existing.length > 0) {
+        existing.forEach(b => {
+          const t = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          if (t > latestTs) latestTs = t;
         });
       }
       const now = Date.now();
       const oneDay = 24 * 60 * 60 * 1000;
-      // if none or older than 24h, create backup
       if (!latestTs || (now - latestTs) >= oneDay) {
         const payload = createBackupPayload();
         await API.saveData('kpm-backups', payload);
-        setLastBackup(payload);
-        console.log('Auto-backup created at', payload.timestamp);
+        await refreshTable('kpm-backups');
+        console.log('Auto-backup created:', payload.backup_id);
       } else {
-        // no need to backup now
         console.log('Auto-backup not needed. Last backup at', new Date(latestTs).toISOString());
       }
-    } catch (error) {
-      console.error('Auto backup failed:', error);
+    } catch (err) {
+      console.error('runAutoBackup error:', err);
     }
   };
 
-  // ----------------------
-  // Auth and user management
-  // ----------------------
+  // get list of backups (limited)
+  const getBackupsList = async () => {
+    const b = await refreshTable('kpm-backups');
+    return b;
+  };
+
+  // restore a backup by backup_id (admin only)
+  const restoreBackup = async (backupId) => {
+    if (!backupId) return alert('Please select a backup to restore.');
+    if (!window.confirm('Restoring will overwrite current data. Continue?')) return;
+
+    try {
+      const allBackups = await fetchTable('kpm-backups');
+      const chosen = (allBackups || []).find(b => b.backup_id === backupId);
+      if (!chosen) return alert('Selected backup not found in AWS. Try again.');
+
+      // Overwrite local state immediately for UI responsiveness
+      if (Array.isArray(chosen.users)) setUsers(chosen.users);
+      if (Array.isArray(chosen.payments)) {
+        const sorted = chosen.payments.slice().sort((a, b) => {
+          const ta = a.timestamp ? new Date(a.timestamp).getTime() : new Date(a.date || 0).getTime();
+          const tb = b.timestamp ? new Date(b.timestamp).getTime() : new Date(b.date || 0).getTime();
+          return tb - ta;
+        });
+        setPayments(sorted);
+      }
+      if (Array.isArray(chosen.customers)) setCustomers(chosen.customers);
+      if (Array.isArray(chosen.suppliers)) setSuppliers(chosen.suppliers);
+
+      // Persist restored data back to respective tables (overwrite)
+      await saveFullTable('kpm-users', chosen.users || []);
+      await saveFullTable('kpm-payments', chosen.payments || []);
+      await saveFullTable('kpm-customers', chosen.customers || []);
+      await saveFullTable('kpm-suppliers', chosen.suppliers || []);
+
+      alert('Restore completed successfully. Data re-synced to AWS.');
+      // refresh backups list too
+      await refreshTable('kpm-backups');
+    } catch (err) {
+      console.error('restoreBackup error:', err);
+      alert('Restore failed. Check console for details.');
+    }
+  };
+
+  // ---------------------------
+  // Auth / user flows
+  // ---------------------------
   const handleLogin = (e) => {
     e.preventDefault();
     if (!loginForm.username || !loginForm.password) {
-      alert('Please enter both username and password!');
+      alert('Please enter username and password');
       return;
     }
-    const user = users.find(u =>
+    const found = users.find(u =>
       u.username.toLowerCase() === loginForm.username.trim().toLowerCase() &&
       u.password === loginForm.password
     );
-    if (user) {
-      setCurrentUser(user);
+    if (found) {
+      setCurrentUser(found);
       setLoginForm({ username: '', password: '' });
     } else {
-      alert('❌ Invalid credentials!\n\nPlease check your username and password.');
+      alert('Invalid credentials');
     }
   };
 
@@ -253,37 +323,31 @@ const App = () => {
   const handleChangePassword = async (e) => {
     e.preventDefault();
     if (currentUser.password !== passwordForm.oldPassword) {
-      alert('Old password is incorrect!');
+      alert('Old password incorrect');
       return;
     }
     if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      alert('New passwords do not match!');
+      alert('New passwords do not match');
       return;
     }
     if (passwordForm.newPassword.length < 6) {
-      alert('Password must be at least 6 characters long!');
+      alert('Password must be at least 6 characters');
       return;
     }
-    // Update locally
-    const updatedUsers = users.map(u =>
-      u.id === currentUser.id ? { ...u, password: passwordForm.newPassword } : u
-    );
+
+    const updatedUsers = users.map(u => u.id === currentUser.id ? { ...u, password: passwordForm.newPassword } : u);
     setUsers(updatedUsers);
     setCurrentUser({ ...currentUser, password: passwordForm.newPassword });
 
-    // Save users to backend (full table), and also try to update single user record
+    // persist immediately
     try {
       await saveFullTable('kpm-users', updatedUsers);
-      // Try single-user upsert to ensure backend reflects immediate change (if supported)
-      try {
-        await API.saveData('kpm-users', { ...currentUser, password: passwordForm.newPassword });
-      } catch (e) {
-        // ignore secondary failure
-      }
-      alert('Password changed successfully!');
-    } catch (error) {
-      console.error('Failed to save updated password to backend:', error);
-      alert('Password changed locally but failed to save to server. Check logs.');
+      // optional single-user upsert (if backend supports)
+      try { await API.saveData('kpm-users', { id: currentUser.id, password: passwordForm.newPassword }); } catch(e){/* ignore */ }
+      alert('Password changed and saved to server');
+    } catch (err) {
+      console.error('Password save error:', err);
+      alert('Password changed locally but failed to save to server.');
     } finally {
       setShowChangePassword(false);
       setPasswordForm({ oldPassword: '', newPassword: '', confirmPassword: '' });
@@ -292,63 +356,40 @@ const App = () => {
 
   const handleForgotPassword = async (e) => {
     e.preventDefault();
-    if (!resetUsername.trim()) {
-      alert('Please enter a username!');
-      return;
-    }
+    if (!resetUsername.trim()) return alert('Enter username');
     const user = users.find(u => u.username.toLowerCase() === resetUsername.trim().toLowerCase());
-    if (!user) {
-      alert('❌ Username not found!\n\nPlease check the spelling or contact an admin.');
+    if (!user) return alert('User not found');
+    if (user.role === 'admin') {
+      alert(`Admin user: ${user.username}\nPassword: ${user.password}`);
       return;
     }
-    if (user.role === 'admin') {
-      alert(`🔐 Admin Password Recovery\n\nUsername: ${user.username}\nCurrent Password: ${user.password}\n\nNote: Contact other admin to change password if needed.`);
-    } else {
-      const newPassword = 'manager123';
-      const updatedUsers = users.map(u => u.id === user.id ? { ...u, password: newPassword } : u);
-      setUsers(updatedUsers);
-      await saveFullTable('kpm-users', updatedUsers);
-      alert(`✅ Password Reset Successful!\n\nUsername: ${user.username}\nNew Password: ${newPassword}\n\nIMPORTANT: Please change your password immediately after login.`);
-      setShowForgotPassword(false);
-      setResetUsername('');
-    }
+    const newPass = 'manager123';
+    const updatedUsers = users.map(u => u.id === user.id ? { ...u, password: newPass } : u);
+    setUsers(updatedUsers);
+    await saveFullTable('kpm-users', updatedUsers);
+    alert(`Password reset to ${newPass}. Please change after login.`);
+    setShowForgotPassword(false);
+    setResetUsername('');
   };
 
-  // ----------------------
-  // Modals / CRUD operations
-  // ----------------------
+  // ---------------------------
+  // CRUD handlers (payments, users, masters)
+  // ---------------------------
   const openModal = (type, item = null) => {
     setModalType(type);
     setEditingItem(item);
-    if (type === 'payment' && item) {
-      setFormData(item);
-    } else if (type === 'payment') {
-      setFormData({
-        type: 'in',
-        handledBy: currentUser ? currentUser.name : '',
-        customerSupplier: '',
-        amount: '',
-        method: 'Cash',
-        category: '',
-        notes: '',
-        date: new Date().toISOString().split('T')[0]
-      });
-    } else if (type === 'user' && item) {
-      setNewUser(item);
+    if (type === 'payment') {
+      if (item) setFormData(item);
+      else setFormData({ type: 'in', handledBy: currentUser ? currentUser.name : '', customerSupplier: '', amount: '', method: 'Cash', category: '', notes: '', date: new Date().toISOString().split('T')[0] });
     } else if (type === 'user') {
-      setNewUser({ username: '', password: '', name: '' });
-    } else if ((type === 'customer' || type === 'supplier') && item) {
-      setNewMaster(item);
+      setNewUser(item || { username: '', password: '', name: '' });
     } else if (type === 'customer' || type === 'supplier') {
-      setNewMaster({ name: '', phone: '', address: '', gst: '' });
+      setNewMaster(item || { name: '', phone: '', address: '', gst: '' });
     }
     setShowModal(true);
   };
 
-  const closeModal = () => {
-    setShowModal(false);
-    setEditingItem(null);
-  };
+  const closeModal = () => { setShowModal(false); setEditingItem(null); };
 
   const handlePaymentSubmit = async (e) => {
     e.preventDefault();
@@ -359,19 +400,15 @@ const App = () => {
       enteredById: currentUser.id,
       timestamp: editingItem ? editingItem.timestamp : new Date().toISOString()
     };
-    let newPayments;
-    if (editingItem) {
-      newPayments = payments.map(p => p.id === editingItem.id ? payment : p);
-    } else {
-      newPayments = [...payments, payment];
-    }
-    setPayments(newPayments);
+    let newPayments = editingItem ? payments.map(p => p.id === editingItem.id ? payment : p) : [...payments, payment];
+    // update local & persist
+    setPayments(newPayments.slice().sort((a,b)=> new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)));
     await saveFullTable('kpm-payments', newPayments);
     closeModal();
   };
 
   const handleDeletePayment = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this payment?')) return;
+    if (!window.confirm('Delete payment?')) return;
     const newPayments = payments.filter(p => p.id !== id);
     setPayments(newPayments);
     await saveFullTable('kpm-payments', newPayments);
@@ -379,39 +416,19 @@ const App = () => {
 
   const handleAddUser = async (e) => {
     e.preventDefault();
-    if (!newUser.name || !newUser.username || !newUser.password) {
-      alert('Please fill all fields!');
-      return;
-    }
-    if (users.find(u => u.username === newUser.username && (!editingItem || u.id !== editingItem.id))) {
-      alert('Username already exists!');
-      return;
-    }
-    if (newUser.password.length < 6) {
-      alert('Password must be at least 6 characters long!');
-      return;
-    }
-    const user = {
-      id: editingItem ? editingItem.id : Date.now(),
-      username: newUser.username.trim(),
-      password: newUser.password,
-      name: newUser.name.trim(),
-      role: 'manager'
-    };
-    let newUsers;
-    if (editingItem) {
-      newUsers = users.map(u => u.id === editingItem.id ? user : u);
-    } else {
-      newUsers = [...users, user];
-    }
+    if (!newUser.name || !newUser.username || !newUser.password) return alert('Fill fields');
+    if (users.find(u => u.username === newUser.username && (!editingItem || u.id !== editingItem.id))) return alert('Username exists');
+    if (newUser.password.length < 6) return alert('Password min 6 chars');
+    const user = { id: editingItem ? editingItem.id : Date.now(), username: newUser.username.trim(), password: newUser.password, name: newUser.name.trim(), role: 'manager' };
+    const newUsers = editingItem ? users.map(u => u.id === editingItem.id ? user : u) : [...users, user];
     setUsers(newUsers);
     await saveFullTable('kpm-users', newUsers);
-    alert(`Manager added successfully!\nUsername: ${user.username}\nPassword: ${user.password}\n\nPlease save these credentials.`);
+    alert(`Manager ${user.username} added.`);
     closeModal();
   };
 
   const handleDeleteUser = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this user?')) return;
+    if (!window.confirm('Delete user?')) return;
     const newUsers = users.filter(u => u.id !== id);
     setUsers(newUsers);
     await saveFullTable('kpm-users', newUsers);
@@ -421,15 +438,11 @@ const App = () => {
     e.preventDefault();
     const master = { ...newMaster, id: editingItem ? editingItem.id : Date.now() };
     if (modalType === 'customer') {
-      let newCustomers;
-      if (editingItem) newCustomers = customers.map(c => c.id === editingItem.id ? master : c);
-      else newCustomers = [...customers, master];
+      const newCustomers = editingItem ? customers.map(c => c.id === editingItem.id ? master : c) : [...customers, master];
       setCustomers(newCustomers);
       await saveFullTable('kpm-customers', newCustomers);
-    } else if (modalType === 'supplier') {
-      let newSuppliers;
-      if (editingItem) newSuppliers = suppliers.map(s => s.id === editingItem.id ? master : s);
-      else newSuppliers = [...suppliers, master];
+    } else {
+      const newSuppliers = editingItem ? suppliers.map(s => s.id === editingItem.id ? master : s) : [...suppliers, master];
       setSuppliers(newSuppliers);
       await saveFullTable('kpm-suppliers', newSuppliers);
     }
@@ -437,7 +450,7 @@ const App = () => {
   };
 
   const handleDeleteMaster = async (id, type) => {
-    if (!window.confirm(`Are you sure you want to delete this ${type}?`)) return;
+    if (!window.confirm('Delete?')) return;
     if (type === 'customer') {
       const newCustomers = customers.filter(c => c.id !== id);
       setCustomers(newCustomers);
@@ -449,24 +462,24 @@ const App = () => {
     }
   };
 
-  // ----------------------
-  // Calculations / UI helpers
-  // ----------------------
+  // ---------------------------
+  // Helpers for UI calculations
+  // ---------------------------
   const calculateHolding = (personName) => {
-    const personPayments = payments.filter(p => p.handledBy && p.handledBy.toLowerCase() === personName.toLowerCase());
-    const totalIn = personPayments.filter(p => p.type === 'in').reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
-    const totalOut = personPayments.filter(p => p.type === 'out').reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+    const list = payments.filter(p => p.handledBy && p.handledBy.toLowerCase() === personName.toLowerCase());
+    const totalIn = list.filter(p => p.type === 'in').reduce((s, x) => s + parseFloat(x.amount || 0), 0);
+    const totalOut = list.filter(p => p.type === 'out').reduce((s, x) => s + parseFloat(x.amount || 0), 0);
     return totalIn - totalOut;
   };
 
   const getAllStaff = () => users.map(u => u.name).sort();
-  const getTotalIn = () => payments.filter(p => p.type === 'in').reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
-  const getTotalOut = () => payments.filter(p => p.type === 'out').reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+  const getTotalIn = () => payments.filter(p => p.type === 'in').reduce((s, x) => s + parseFloat(x.amount || 0), 0);
+  const getTotalOut = () => payments.filter(p => p.type === 'out').reduce((s, x) => s + parseFloat(x.amount || 0), 0);
   const getHolding = () => getTotalIn() - getTotalOut();
 
-  // ----------------------
-  // UI Render
-  // ----------------------
+  // ---------------------------
+  // Render
+  // ---------------------------
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 flex items-center justify-center">
@@ -482,7 +495,6 @@ const App = () => {
     );
   }
 
-  // Login screen
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 flex items-center justify-center p-4">
@@ -496,31 +508,23 @@ const App = () => {
             <div className="space-y-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Username</label>
-                <input type="text" value={loginForm.username} onChange={(e) => setLoginForm({...loginForm, username: e.target.value})}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="Enter username"/>
+                <input type="text" value={loginForm.username} onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter username" />
               </div>
-
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
-                <input type="password" value={loginForm.password} onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="Enter password"/>
+                <input type="password" value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter password" />
               </div>
-
-              <button onClick={handleLogin} className="w-full bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition font-medium">Login</button>
-
-              <button onClick={() => setShowForgotPassword(true)} className="w-full text-blue-600 hover:text-blue-700 text-sm font-medium">Forgot Password?</button>
+              <button onClick={handleLogin} className="w-full bg-green-600 text-white py-3 rounded-lg">Login</button>
+              <button onClick={() => setShowForgotPassword(true)} className="w-full text-blue-600 text-sm">Forgot Password?</button>
             </div>
           ) : (
             <div className="space-y-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Enter Your Username</label>
-                <input type="text" value={resetUsername} onChange={(e) => setResetUsername(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="Enter username"/>
+                <input type="text" value={resetUsername} onChange={(e) => setResetUsername(e.target.value)} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter username" />
               </div>
-
-              <button onClick={handleForgotPassword} className="w-full bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition font-medium">Reset Password</button>
-
-              <button onClick={() => { setShowForgotPassword(false); setResetUsername(''); }} className="w-full text-gray-600 hover:text-gray-700 text-sm font-medium">Back to Login</button>
+              <button onClick={handleForgotPassword} className="w-full bg-green-600 text-white py-3 rounded-lg">Reset Password</button>
+              <button onClick={() => setShowForgotPassword(false)} className="w-full text-gray-600 text-sm">Back to Login</button>
             </div>
           )}
         </div>
@@ -528,7 +532,7 @@ const App = () => {
     );
   }
 
-  // Main app
+  // Main UI (same structure as earlier; backup tab added)
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="bg-gradient-to-r from-green-600 to-blue-600 text-white p-4 shadow-lg">
@@ -537,22 +541,23 @@ const App = () => {
             <h1 className="text-2xl font-bold">KPM VEGETABLES</h1>
             <p className="text-sm opacity-90">Welcome, {currentUser.name} ({currentUser.role})</p>
           </div>
+
           <div className="flex gap-3">
-            <button onClick={() => { loadData(); }} className="flex items-center gap-2 bg-white bg-opacity-20 text-white px-4 py-2 rounded-lg hover:bg-opacity-30 transition" title="Refresh data from AWS">
+            <button onClick={() => initialLoad()} className="flex items-center gap-2 bg-white bg-opacity-20 text-white px-4 py-2 rounded-lg">
               <RefreshCw size={18} /> Refresh
             </button>
 
             {currentUser.role === 'admin' && (
-              <button onClick={manualBackup} className="flex items-center gap-2 bg-white bg-opacity-20 text-white px-4 py-2 rounded-lg hover:bg-opacity-30 transition" title="Manual Backup to AWS">
+              <button onClick={manualBackup} className="flex items-center gap-2 bg-white bg-opacity-20 text-white px-4 py-2 rounded-lg">
                 <Upload size={18} /> Backup Now
               </button>
             )}
 
-            <button onClick={() => setShowChangePassword(true)} className="flex items-center gap-2 bg-white bg-opacity-20 text-white px-4 py-2 rounded-lg hover:bg-opacity-30 transition">
+            <button onClick={() => setShowChangePassword(true)} className="flex items-center gap-2 bg-white bg-opacity-20 text-white px-4 py-2 rounded-lg">
               <Key size={18} /> Change Password
             </button>
 
-            <button onClick={handleLogout} className="flex items-center gap-2 bg-white text-green-600 px-4 py-2 rounded-lg hover:bg-gray-100 transition">
+            <button onClick={handleLogout} className="flex items-center gap-2 bg-white text-green-600 px-4 py-2 rounded-lg">
               <LogOut size={18} /> Logout
             </button>
           </div>
@@ -592,11 +597,11 @@ const App = () => {
 
         <div className="bg-white rounded-xl shadow mb-6">
           <div className="flex border-b overflow-x-auto">
-            <button onClick={() => setActiveTab('dashboard')} className={`px-6 py-3 font-medium whitespace-nowrap ${activeTab === 'dashboard' ? 'border-b-2 border-green-600 text-green-600' : 'text-gray-600'}`}>Dashboard</button>
-            <button onClick={() => setActiveTab('holdings')} className={`px-6 py-3 font-medium whitespace-nowrap ${activeTab === 'holdings' ? 'border-b-2 border-green-600 text-green-600' : 'text-gray-600'}`}>Holdings</button>
-            <button onClick={() => setActiveTab('masters')} className={`px-6 py-3 font-medium whitespace-nowrap ${activeTab === 'masters' ? 'border-b-2 border-green-600 text-green-600' : 'text-gray-600'}`}><BookOpen size={18} className="inline mr-2" /> Masters</button>
-            {currentUser.role === 'admin' && <button onClick={() => setActiveTab('users')} className={`px-6 py-3 font-medium whitespace-nowrap ${activeTab === 'users' ? 'border-b-2 border-green-600 text-green-600' : 'text-gray-600'}`}><Users size={18} className="inline mr-2" /> Users</button>}
-            {currentUser.role === 'admin' && <button onClick={() => setActiveTab('backup')} className={`px-6 py-3 font-medium whitespace-nowrap ${activeTab === 'backup' ? 'border-b-2 border-green-600 text-green-600' : 'text-gray-600'}`}><Cloud size={18} className="inline mr-2" /> Backup & Restore</button>}
+            <button onClick={() => setActiveTab('dashboard')} className={`px-6 py-3 ${activeTab==='dashboard'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}>Dashboard</button>
+            <button onClick={() => setActiveTab('holdings')} className={`px-6 py-3 ${activeTab==='holdings'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}>Holdings</button>
+            <button onClick={() => setActiveTab('masters')} className={`px-6 py-3 ${activeTab==='masters'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><BookOpen size={18} className="inline mr-2" /> Masters</button>
+            {currentUser.role === 'admin' && <button onClick={() => setActiveTab('users')} className={`px-6 py-3 ${activeTab==='users'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><Users size={18} className="inline mr-2" /> Users</button>}
+            {currentUser.role === 'admin' && <button onClick={() => setActiveTab('backup')} className={`px-6 py-3 ${activeTab==='backup'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><Cloud size={18} className="inline mr-2" /> Backup & Restore</button>}
           </div>
 
           <div className="p-6">
@@ -604,7 +609,7 @@ const App = () => {
               <div>
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-xl font-bold">All Payments</h2>
-                  <button onClick={() => openModal('payment')} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition flex items-center gap-2"><Plus size={18} /> Add Payment</button>
+                  <button onClick={() => openModal('payment')} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Payment</button>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -623,13 +628,17 @@ const App = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
-                      {payments.sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp)).map(payment => (
+                      {payments.map(payment => (
                         <tr key={payment.id} className="hover:bg-gray-50">
                           <td className="px-4 py-3 text-sm">{payment.date}</td>
-                          <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-semibold ${payment.type === 'in' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{payment.type === 'in' ? 'IN' : 'OUT'}</span></td>
+                          <td className="px-4 py-3">
+                            <span className={`px-2 py-1 rounded text-xs font-semibold ${payment.type==='in'?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}`}>
+                              {payment.type === 'in' ? 'IN' : 'OUT'}
+                            </span>
+                          </td>
                           <td className="px-4 py-3 text-sm font-bold text-blue-600">{payment.handledBy}</td>
-                          <td className="px-4 py-3 text-sm font-medium">{payment.customerSupplier || '-'}</td>
-                          <td className="px-4 py-3 text-sm font-bold">₹{parseFloat(payment.amount).toFixed(2)}</td>
+                          <td className="px-4 py-3 text-sm">{payment.customerSupplier || '-'}</td>
+                          <td className="px-4 py-3 text-sm font-bold">₹{parseFloat(payment.amount || 0).toFixed(2)}</td>
                           <td className="px-4 py-3 text-sm">{payment.method}</td>
                           <td className="px-4 py-3 text-sm">{payment.category || '-'}</td>
                           <td className="px-4 py-3 text-sm text-gray-600">{payment.enteredBy}</td>
@@ -654,7 +663,7 @@ const App = () => {
 
             {activeTab === 'holdings' && (
               <div>
-                <h2 className="text-xl font-bold mb-4">Staff Holdings (Parthi, Prabu, Managers)</h2>
+                <h2 className="text-xl font-bold mb-4">Staff Holdings</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {getAllStaff().map(person => {
                     const holding = calculateHolding(person);
@@ -676,21 +685,21 @@ const App = () => {
                   <div>
                     <div className="flex justify-between items-center mb-4">
                       <h2 className="text-xl font-bold">Customers</h2>
-                      <button onClick={() => openModal('customer')} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition flex items-center gap-2"><Plus size={18} /> Add Customer</button>
+                      <button onClick={() => openModal('customer')} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Customer</button>
                     </div>
                     <div className="space-y-3">
                       {customers.map(customer => (
                         <div key={customer.id} className="bg-white border rounded-lg p-4 shadow-sm">
                           <div className="flex justify-between items-start">
-                            <div className="flex-1">
+                            <div>
                               <h3 className="font-bold text-lg">{customer.name}</h3>
                               {customer.phone && <p className="text-sm text-gray-600">📱 {customer.phone}</p>}
                               {customer.address && <p className="text-sm text-gray-600">📍 {customer.address}</p>}
                               {customer.gst && <p className="text-sm text-gray-600">🔢 GST: {customer.gst}</p>}
                             </div>
                             <div className="flex gap-2">
-                              <button onClick={() => openModal('customer', customer)} className="text-blue-600 hover:text-blue-800"><Edit2 size={16} /></button>
-                              <button onClick={() => handleDeleteMaster(customer.id, 'customer')} className="text-red-600 hover:text-red-800"><Trash2 size={16} /></button>
+                              <button onClick={() => openModal('customer', customer)} className="text-blue-600"><Edit2 size={16} /></button>
+                              <button onClick={() => handleDeleteMaster(customer.id, 'customer')} className="text-red-600"><Trash2 size={16} /></button>
                             </div>
                           </div>
                         </div>
@@ -702,21 +711,21 @@ const App = () => {
                   <div>
                     <div className="flex justify-between items-center mb-4">
                       <h2 className="text-xl font-bold">Suppliers</h2>
-                      <button onClick={() => openModal('supplier')} className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2"><Plus size={18} /> Add Supplier</button>
+                      <button onClick={() => openModal('supplier')} className="bg-blue-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Supplier</button>
                     </div>
                     <div className="space-y-3">
                       {suppliers.map(supplier => (
                         <div key={supplier.id} className="bg-white border rounded-lg p-4 shadow-sm">
                           <div className="flex justify-between items-start">
-                            <div className="flex-1">
+                            <div>
                               <h3 className="font-bold text-lg">{supplier.name}</h3>
                               {supplier.phone && <p className="text-sm text-gray-600">📱 {supplier.phone}</p>}
                               {supplier.address && <p className="text-sm text-gray-600">📍 {supplier.address}</p>}
                               {supplier.gst && <p className="text-sm text-gray-600">🔢 GST: {supplier.gst}</p>}
                             </div>
                             <div className="flex gap-2">
-                              <button onClick={() => openModal('supplier', supplier)} className="text-blue-600 hover:text-blue-800"><Edit2 size={16} /></button>
-                              <button onClick={() => handleDeleteMaster(supplier.id, 'supplier')} className="text-red-600 hover:text-red-800"><Trash2 size={16} /></button>
+                              <button onClick={() => openModal('supplier', supplier)} className="text-blue-600"><Edit2 size={16} /></button>
+                              <button onClick={() => handleDeleteMaster(supplier.id, 'supplier')} className="text-red-600"><Trash2 size={16} /></button>
                             </div>
                           </div>
                         </div>
@@ -732,7 +741,7 @@ const App = () => {
               <div>
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-xl font-bold">User Management</h2>
-                  <button onClick={() => openModal('user')} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition flex items-center gap-2"><Plus size={18} /> Add Manager</button>
+                  <button onClick={() => openModal('user')} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Manager</button>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {users.map(user => (
@@ -742,12 +751,12 @@ const App = () => {
                           <h3 className="font-bold text-lg">{user.name}</h3>
                           <p className="text-sm text-gray-600">@{user.username}</p>
                         </div>
-                      <span className={`px-2 py-1 rounded text-xs font-semibold ${user.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{user.role.toUpperCase()}</span>
+                        <span className={`px-2 py-1 rounded text-xs font-semibold ${user.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{user.role.toUpperCase()}</span>
                       </div>
                       {user.role === 'manager' && (
                         <div className="flex gap-2">
-                          <button onClick={() => openModal('user', user)} className="flex-1 bg-blue-50 text-blue-600 px-3 py-2 rounded hover:bg-blue-100 transition text-sm">Edit</button>
-                          <button onClick={() => handleDeleteUser(user.id)} className="flex-1 bg-red-50 text-red-600 px-3 py-2 rounded hover:bg-red-100 transition text-sm">Delete</button>
+                          <button onClick={() => openModal('user', user)} className="flex-1 bg-blue-50 text-blue-600 px-3 py-2 rounded">Edit</button>
+                          <button onClick={() => handleDeleteUser(user.id)} className="flex-1 bg-red-50 text-red-600 px-3 py-2 rounded">Delete</button>
                         </div>
                       )}
                     </div>
@@ -761,67 +770,84 @@ const App = () => {
                 <h2 className="text-xl font-bold mb-4">Backup & Restore</h2>
                 <div className="bg-white rounded-xl p-6 shadow mb-4">
                   <p className="text-sm text-gray-600">Backups are stored daily to the <code>kpm-backups</code> table in AWS.</p>
+
                   <div className="mt-4 flex gap-3">
-                    <button onClick={manualBackup} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition flex items-center gap-2"><Upload size={16} /> Manual Backup Now</button>
-                    <button onClick={async () => { const b = await fetchTable('kpm-backups'); alert(`Backups found: ${Array.isArray(b) ? b.length : 0}`); }} className="bg-gray-100 px-4 py-2 rounded-lg">Check Backups</button>
+                    <button onClick={manualBackup} className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2"><Upload size={16} /> Manual Backup Now</button>
+                    <button onClick={async () => { await refreshTable('kpm-backups'); alert(`Backups found: ${backups.length}`); }} className="bg-gray-100 px-4 py-2 rounded-lg">Check Backups</button>
                   </div>
+
                   <div className="mt-4">
                     <p className="text-sm text-gray-700">Last Backup:</p>
                     <p className="font-medium">{lastBackup ? new Date(lastBackup.timestamp).toLocaleString() : 'No backups yet'}</p>
                   </div>
                 </div>
-                <div className="text-sm text-gray-500">Restore feature coming soon — backups are ready and safe in AWS.</div>
+
+                <div className="bg-white rounded-xl p-6 shadow">
+                  <h3 className="font-semibold mb-3">Restore from Backup</h3>
+                  <div className="flex gap-3 items-center">
+                    <select id="backup-select" className="border px-3 py-2 rounded" style={{ minWidth: 360 }}>
+                      <option value="">Select a backup</option>
+                      {backups.map(b => <option key={b.backup_id} value={b.backup_id}>{b.backup_id} — {new Date(b.timestamp).toLocaleString()}</option>)}
+                    </select>
+                    <button onClick={() => {
+                      const sel = document.getElementById('backup-select').value;
+                      if (!sel) return alert('Select a backup first');
+                      restoreBackup(sel);
+                    }} className="bg-blue-600 text-white px-4 py-2 rounded">Restore</button>
+                    <button onClick={() => { refreshTable('kpm-backups'); alert('Backups refreshed'); }} className="bg-gray-100 px-4 py-2 rounded">Refresh List</button>
+                  </div>
+                  <p className="text-sm text-gray-500 mt-3">Restoring will overwrite current tables. Use carefully.</p>
+                </div>
               </div>
             )}
+
           </div>
         </div>
       </div>
 
-      {/* Modals (payment/customer/supplier/user/change password) */}
+      {/* Modals: Payment, Master, User, Change Password (same structure as previous version) */}
       {showModal && modalType === 'payment' && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl my-8">
-            <div className="bg-gradient-to-r from-green-600 to-blue-600 text-white p-6 rounded-t-2xl">
-              <div className="flex justify-between items-center">
-                <h3 className="text-2xl font-bold">{editingItem ? 'Edit Payment' : 'Add New Payment'}</h3>
-                <button onClick={closeModal} className="text-white hover:bg-white hover:bg-opacity-20 p-2 rounded-lg transition"><X size={28} /></button>
-              </div>
+            <div className="bg-gradient-to-r from-green-600 to-blue-600 text-white p-6 rounded-t-2xl flex justify-between items-center">
+              <h3 className="text-2xl font-bold">{editingItem ? 'Edit Payment' : 'Add New Payment'}</h3>
+              <button onClick={closeModal} className="text-white"><X size={28} /></button>
             </div>
             <div className="p-8">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* form fields same as before */}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Payment Type *</label>
-                  <select value={formData.type} onChange={(e) => setFormData({...formData, type: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-lg">
-                    <option value="in">💰 Payment In</option>
-                    <option value="out">💸 Payment Out</option>
+                  <select value={formData.type} onChange={(e) => setFormData({ ...formData, type: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl">
+                    <option value="in">Payment In</option>
+                    <option value="out">Payment Out</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Handled By (Staff) *</label>
-                  <select value={formData.handledBy} onChange={(e) => setFormData({...formData, handledBy: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-lg">
-                    <option value="">Select staff member</option>
-                    {users.map(user => <option key={user.id} value={user.name}>{user.name}</option>)}
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Handled By *</label>
+                  <select value={formData.handledBy} onChange={(e) => setFormData({ ...formData, handledBy: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl">
+                    <option value="">Select staff</option>
+                    {users.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
                   </select>
-                  <p className="text-xs text-gray-500 mt-1">Who handled this transaction?</p>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">{formData.type === 'in' ? 'Customer (Optional)' : 'Supplier (Optional)'}</label>
-                  <select value={formData.customerSupplier} onChange={(e) => setFormData({...formData, customerSupplier: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-lg">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">{formData.type==='in' ? 'Customer (optional)' : 'Supplier (optional)'}</label>
+                  <select value={formData.customerSupplier} onChange={(e)=>setFormData({...formData, customerSupplier: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
                     <option value="">Select or leave blank</option>
-                    {formData.type === 'in' ? customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>) : suppliers.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                    {formData.type==='in' ? customers.map(c=> <option key={c.id} value={c.name}>{c.name}</option>) : suppliers.map(s=> <option key={s.id} value={s.name}>{s.name}</option>)}
                   </select>
-                  <input type="text" value={formData.customerSupplier} onChange={(e) => setFormData({...formData, customerSupplier: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl mt-2" placeholder="Or type name manually"/>
+                  <input type="text" value={formData.customerSupplier} onChange={(e)=>setFormData({...formData, customerSupplier: e.target.value})} className="w-full mt-2 px-4 py-3 border-2 rounded-xl" placeholder="Or type name manually" />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Amount (₹)</label>
-                  <input type="number" step="0.01" value={formData.amount} onChange={(e) => setFormData({...formData, amount: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl text-lg font-bold"/>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Amount (₹) *</label>
+                  <input type="number" step="0.01" value={formData.amount} onChange={(e)=>setFormData({...formData, amount: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl" />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Payment Method</label>
-                  <select value={formData.method} onChange={(e) => setFormData({...formData, method: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl text-lg">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Method *</label>
+                  <select value={formData.method} onChange={(e)=>setFormData({...formData, method: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
                     {paymentMethods.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
                 </div>
@@ -829,7 +855,7 @@ const App = () => {
                 {formData.type === 'out' && (
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Category *</label>
-                    <select value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl text-lg" required>
+                    <select value={formData.category} onChange={(e)=>setFormData({...formData, category: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
                       <option value="">Select category</option>
                       {payoutCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
                     </select>
@@ -837,19 +863,19 @@ const App = () => {
                 )}
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Date *</label>
-                  <input type="date" value={formData.date} onChange={(e) => setFormData({...formData, date: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl text-lg" />
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Date</label>
+                  <input type="date" value={formData.date} onChange={(e)=>setFormData({...formData, date: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl" />
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Notes (Optional)</label>
-                  <textarea value={formData.notes} onChange={(e) => setFormData({...formData, notes: e.target.value})} className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl text-lg" rows="3" />
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Notes</label>
+                  <textarea value={formData.notes} onChange={(e)=>setFormData({...formData, notes: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl" rows={3} />
                 </div>
               </div>
 
               <div className="flex gap-4 mt-8">
-                <button onClick={closeModal} className="flex-1 bg-gray-200 text-gray-700 py-4 rounded-xl">Cancel</button>
-                <button onClick={handlePaymentSubmit} className="flex-1 bg-gradient-to-r from-green-600 to-blue-600 text-white py-4 rounded-xl">{editingItem ? '✓ Update Payment' : '+ Add Payment'}</button>
+                <button onClick={closeModal} className="flex-1 bg-gray-200 py-4 rounded-xl">Cancel</button>
+                <button onClick={handlePaymentSubmit} className="flex-1 bg-gradient-to-r from-green-600 to-blue-600 text-white py-4 rounded-xl">{editingItem ? 'Update' : 'Add Payment'}</button>
               </div>
             </div>
           </div>
@@ -862,27 +888,29 @@ const App = () => {
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold">{editingItem ? 'Edit' : 'Add'} {modalType === 'customer' ? 'Customer' : 'Supplier'}</h3>
-              <button onClick={closeModal} className="text-gray-500 hover:text-gray-700"><X size={24} /></button>
+              <button onClick={closeModal} className="text-gray-500"><X size={24} /></button>
             </div>
-            <div className="space-y-4">
+
+            <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
-                <input type="text" value={newMaster.name} onChange={(e) => setNewMaster({...newMaster, name: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Enter name" />
+                <input type="text" value={newMaster.name} onChange={(e)=>setNewMaster({...newMaster, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="Name" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
-                <input type="text" value={newMaster.phone} onChange={(e) => setNewMaster({...newMaster, phone: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Enter phone number" />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                <input type="text" value={newMaster.phone} onChange={(e)=>setNewMaster({...newMaster, phone: e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="Phone" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
-                <textarea value={newMaster.address} onChange={(e) => setNewMaster({...newMaster, address: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" rows="2" placeholder="Enter address" />
+                <textarea value={newMaster.address} onChange={(e)=>setNewMaster({...newMaster, address: e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows={2} placeholder="Address" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">GST Number</label>
-                <input type="text" value={newMaster.gst} onChange={(e) => setNewMaster({...newMaster, gst: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Enter GST number" />
+                <label className="block text-sm font-medium text-gray-700 mb-1">GST</label>
+                <input type="text" value={newMaster.gst} onChange={(e)=>setNewMaster({...newMaster, gst: e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="GST" />
               </div>
-              <div className="flex gap-3 mt-6">
-                <button onClick={closeModal} className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg">Cancel</button>
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={closeModal} className="flex-1 bg-gray-200 py-2 rounded-lg">Cancel</button>
                 <button onClick={handleAddMaster} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? 'Update' : 'Add'}</button>
               </div>
             </div>
@@ -896,24 +924,25 @@ const App = () => {
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold">{editingItem ? 'Edit Manager' : 'Add Manager'}</h3>
-              <button onClick={closeModal} className="text-gray-500 hover:text-gray-700"><X size={24} /></button>
+              <button onClick={closeModal} className="text-gray-500"><X size={24} /></button>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
-                <input type="text" value={newUser.name} onChange={(e) => setNewUser({...newUser, name: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Enter full name" />
+                <input type="text" value={newUser.name} onChange={(e)=>setNewUser({...newUser, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-                <input type="text" value={newUser.username} onChange={(e) => setNewUser({...newUser, username: e.target.value})} disabled={!!editingItem} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Enter username" />
+                <input type="text" value={newUser.username} onChange={(e)=>setNewUser({...newUser, username: e.target.value})} disabled={!!editingItem} className="w-full px-3 py-2 border rounded-lg" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                <input type="password" value={newUser.password} onChange={(e) => setNewUser({...newUser, password: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Enter password" />
+                <input type="password" value={newUser.password} onChange={(e)=>setNewUser({...newUser, password: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
-              <div className="flex gap-3 mt-6">
-                <button onClick={closeModal} className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg">Cancel</button>
-                <button onClick={handleAddUser} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? 'Update' : 'Add'} Manager</button>
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={closeModal} className="flex-1 bg-gray-200 py-2 rounded-lg">Cancel</button>
+                <button onClick={handleAddUser} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? 'Update' : 'Add Manager'}</button>
               </div>
             </div>
           </div>
@@ -926,29 +955,31 @@ const App = () => {
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold flex items-center gap-2"><Lock size={24} className="text-green-600" /> Change Password</h3>
-              <button onClick={() => setShowChangePassword(false)} className="text-gray-500 hover:text-gray-700"><X size={24} /></button>
+              <button onClick={() => setShowChangePassword(false)} className="text-gray-500"><X size={24} /></button>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Old Password *</label>
-                <input type="password" value={passwordForm.oldPassword} onChange={(e) => setPasswordForm({...passwordForm, oldPassword: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Enter old password" />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Old Password</label>
+                <input type="password" value={passwordForm.oldPassword} onChange={(e)=>setPasswordForm({...passwordForm, oldPassword: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">New Password *</label>
-                <input type="password" value={passwordForm.newPassword} onChange={(e) => setPasswordForm({...passwordForm, newPassword: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Enter new password" />
+                <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+                <input type="password" value={passwordForm.newPassword} onChange={(e)=>setPasswordForm({...passwordForm, newPassword: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password *</label>
-                <input type="password" value={passwordForm.confirmPassword} onChange={(e) => setPasswordForm({...passwordForm, confirmPassword: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="Confirm new password" />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
+                <input type="password" value={passwordForm.confirmPassword} onChange={(e)=>setPasswordForm({...passwordForm, confirmPassword: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
-              <div className="flex gap-3 mt-6">
-                <button onClick={() => setShowChangePassword(false)} className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg">Cancel</button>
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={() => setShowChangePassword(false)} className="flex-1 bg-gray-200 py-2 rounded-lg">Cancel</button>
                 <button onClick={handleChangePassword} className="flex-1 bg-green-600 text-white py-2 rounded-lg">Change Password</button>
               </div>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 };
