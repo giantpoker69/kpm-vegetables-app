@@ -1,70 +1,95 @@
-import React, { useState, useEffect, useRef } from 'react';
+// src/App.js
+import React, { useState, useEffect, useRef } from "react";
 import {
   Plus, Trash2, Edit2, LogOut, Users, DollarSign, TrendingUp,
   TrendingDown, X, BookOpen, Key, Lock, Cloud, RefreshCw, Upload
-} from 'lucide-react';
-import { API } from './config';
+} from "lucide-react";
+import { API } from "./config";
+
+/*
+  Final Amplify v3 App.js
+  - Auto-creates default admins if kpm-users empty
+  - Full cloud sync via API.getData / API.saveData
+  - Save full-table with fallback to per-item
+  - Manual + daily auto-backup to kpm-backups
+  - Restore from backup (admin-only)
+  - Payments sorted newest-first
+*/
+
+const DEFAULT_ADMINS = [
+  { id: "1", username: "PARTHI", password: "parthi123", role: "admin", name: "Parthi" },
+  { id: "2", username: "PRABU", password: "prabu123", role: "admin", name: "Prabu" }
+];
 
 const App = () => {
-  // --- core state
+  // core state
   const [currentUser, setCurrentUser] = useState(null);
-  const [users, setUsers] = useState([
-    { id: 1, username: 'PARTHI', password: 'parthi123', role: 'admin', name: 'Parthi' },
-    { id: 2, username: 'PRABU', password: 'prabu123', role: 'admin', name: 'Prabu' }
-  ]);
+  const [users, setUsers] = useState(DEFAULT_ADMINS.slice());
   const [payments, setPayments] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [backups, setBackups] = useState([]);
   const [lastBackup, setLastBackup] = useState(null);
 
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [showModal, setShowModal] = useState(false);
-  const [modalType, setModalType] = useState('');
+  const [modalType, setModalType] = useState("");
   const [editingItem, setEditingItem] = useState(null);
 
-  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
-  const [passwordForm, setPasswordForm] = useState({ oldPassword: '', newPassword: '', confirmPassword: '' });
-  const [resetUsername, setResetUsername] = useState('');
+  const [passwordForm, setPasswordForm] = useState({ oldPassword: "", newPassword: "", confirmPassword: "" });
+  const [resetUsername, setResetUsername] = useState("");
   const [loading, setLoading] = useState(true);
 
   // forms
   const [formData, setFormData] = useState({
-    type: 'in', handledBy: '', customerSupplier: '', amount: '', method: 'Cash',
-    category: '', notes: '', date: new Date().toISOString().split('T')[0]
+    type: "in",
+    handledBy: "",
+    customerSupplier: "",
+    amount: "",
+    method: "Cash",
+    category: "",
+    notes: "",
+    date: new Date().toISOString().split("T")[0]
   });
-  const [newUser, setNewUser] = useState({ username: '', password: '', name: '' });
-  const [newMaster, setNewMaster] = useState({ name: '', phone: '', address: '', gst: '' });
+  const [newUser, setNewUser] = useState({ username: "", password: "", name: "" });
+  const [newMaster, setNewMaster] = useState({ name: "", phone: "", address: "", gst: "" });
 
-  const paymentMethods = ['Cash', 'Bank Transfer', 'UPI'];
-  const payoutCategories = ['Supplier', 'Salary', 'Savings', 'Share', 'Expenses', 'Transport', 'Extra'];
+  const paymentMethods = ["Cash", "Bank Transfer", "UPI"];
+  const payoutCategories = ["Supplier", "Salary", "Savings", "Share", "Expenses", "Transport", "Extra"];
 
-  // auto-backup interval ref
+  // interval ref for auto backup
   const autoBackupRef = useRef(null);
 
   // ---------------------------
-  // Helper: API wrappers
+  // API wrappers
   // ---------------------------
-  // Try bulk save; if backend doesn't support it, fallback to per-item saves.
+  const fetchTable = async (table) => {
+    try {
+      const result = await API.getData(`data?table=${encodeURIComponent(table)}`.replace("data?table=", "data?table=")); 
+      // Many backends return array directly; normalize
+      if (!result) return [];
+      return Array.isArray(result) ? result : (result.items || [result]);
+    } catch (err) {
+      console.error(`fetchTable(${table}) error:`, err);
+      return [];
+    }
+  };
+
+  // Save entire table with bulk payload attempt, fallback to per-item upserts
   const saveFullTable = async (table, items) => {
     try {
-      // If backend supports bulk, try a bulk payload - your API may interpret __bulk
+      // Try a bulk hint first — backend may accept this shape
       const bulkPayload = { __bulk: true, items };
-      const bulkResp = await API.saveData(table, bulkPayload);
-      // if bulkResp indicates success (depends on your API design)
-      if (bulkResp && !bulkResp.error) {
-        // re-fetch the table to confirm
-        await refreshTable(table);
-        return bulkResp;
-      } else {
-        // fallthrough to item-by-item
-        throw new Error('Bulk save not supported or returned error');
-      }
+      const resp = await API.saveData(table, bulkPayload);
+      if (resp && resp.error) throw new Error(resp.error);
+      // re-fetch to confirm
+      await refreshTable(table);
+      return resp;
     } catch (err) {
-      console.warn(`Bulk save failed for ${table}, falling back:`, err);
-      // fallback: save every item individually (upsert)
+      console.warn(`Bulk save failed for ${table}, fallback to per-item:`, err);
       for (const item of items) {
         try {
           await API.saveData(table, item);
@@ -77,28 +102,15 @@ const App = () => {
     }
   };
 
-  const fetchTable = async (table) => {
-    try {
-      const result = await API.getData(table);
-      // normalize to array
-      if (!result) return [];
-      return Array.isArray(result) ? result : [result];
-    } catch (err) {
-      console.error(`fetchTable ${table} error:`, err);
-      return [];
-    }
-  };
-
-  // fetch & set states for specific tables
+  // refresh/repull a single table and update local state
   const refreshTable = async (table) => {
-    if (table === 'kpm-users') {
-      const u = await fetchTable('kpm-users');
+    if (table === "kpm-users") {
+      const u = await fetchTable("kpm-users");
       if (Array.isArray(u) && u.length > 0) setUsers(u);
       return u;
     }
-    if (table === 'kpm-payments') {
-      const p = await fetchTable('kpm-payments');
-      // ensure array and sort newest first
+    if (table === "kpm-payments") {
+      const p = await fetchTable("kpm-payments");
       const sorted = (p || []).slice().sort((a, b) => {
         const ta = a.timestamp ? new Date(a.timestamp).getTime() : new Date(a.date || 0).getTime();
         const tb = b.timestamp ? new Date(b.timestamp).getTime() : new Date(b.date || 0).getTime();
@@ -107,23 +119,22 @@ const App = () => {
       setPayments(sorted);
       return sorted;
     }
-    if (table === 'kpm-customers') {
-      const c = await fetchTable('kpm-customers');
+    if (table === "kpm-customers") {
+      const c = await fetchTable("kpm-customers");
       setCustomers(c || []);
       return c;
     }
-    if (table === 'kpm-suppliers') {
-      const s = await fetchTable('kpm-suppliers');
+    if (table === "kpm-suppliers") {
+      const s = await fetchTable("kpm-suppliers");
       setSuppliers(s || []);
       return s;
     }
-    if (table === 'kpm-backups') {
-      const b = await fetchTable('kpm-backups');
-      // sort by timestamp desc
-      const sorted = (b || []).slice().sort((a, b) => {
-        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-        return tb - ta;
+    if (table === "kpm-backups") {
+      const b = await fetchTable("kpm-backups");
+      const sorted = (b || []).slice().sort((x, y) => {
+        const tx = x.timestamp ? new Date(x.timestamp).getTime() : 0;
+        const ty = y.timestamp ? new Date(y.timestamp).getTime() : 0;
+        return ty - tx;
       });
       setBackups(sorted);
       setLastBackup(sorted[0] || null);
@@ -133,15 +144,14 @@ const App = () => {
   };
 
   // ---------------------------
-  // Load initial data
+  // Startup & auto-backup
   // ---------------------------
   useEffect(() => {
     (async () => {
       await initialLoad();
-      // schedule daily auto-backup (24h)
       autoBackupRef.current = setInterval(() => {
-        runAutoBackup().catch(e => console.error('Auto backup error:', e));
-      }, 24 * 60 * 60 * 1000);
+        runAutoBackup().catch(e => console.error("Auto backup error:", e));
+      }, 24 * 60 * 60 * 1000); // 24h
     })();
     return () => clearInterval(autoBackupRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -150,16 +160,33 @@ const App = () => {
   const initialLoad = async () => {
     try {
       setLoading(true);
-      // load everything in parallel
+
+      // fetch all tables in parallel
       const [u, p, c, s, b] = await Promise.all([
-        fetchTable('kpm-users'),
-        fetchTable('kpm-payments'),
-        fetchTable('kpm-customers'),
-        fetchTable('kpm-suppliers'),
-        fetchTable('kpm-backups')
+        fetchTable("kpm-users"),
+        fetchTable("kpm-payments"),
+        fetchTable("kpm-customers"),
+        fetchTable("kpm-suppliers"),
+        fetchTable("kpm-backups")
       ]);
 
-      if (Array.isArray(u) && u.length > 0) setUsers(u);
+      // If users is empty on AWS, auto-create default admins
+      if (!Array.isArray(u) || u.length === 0) {
+        console.warn("No users found in AWS. Auto-creating default admin users...");
+        // attempt to save default admins
+        try {
+          await saveFullTable("kpm-users", DEFAULT_ADMINS);
+          setUsers(DEFAULT_ADMINS.slice());
+        } catch (e) {
+          console.error("Failed to create default admins:", e);
+          // still keep local defaults so login can work
+          setUsers(DEFAULT_ADMINS.slice());
+        }
+      } else {
+        setUsers(u);
+      }
+
+      // payments
       if (Array.isArray(p)) {
         const sorted = p.slice().sort((a, b) => {
           const ta = a.timestamp ? new Date(a.timestamp).getTime() : new Date(a.date || 0).getTime();
@@ -168,6 +195,7 @@ const App = () => {
         });
         setPayments(sorted);
       }
+
       if (Array.isArray(c)) setCustomers(c);
       if (Array.isArray(s)) setSuppliers(s);
 
@@ -181,53 +209,52 @@ const App = () => {
         setLastBackup(sortedB[0] || null);
       }
 
-      // run immediate auto backup check
+      // run immediate auto-backup check
       await runAutoBackup();
-    } catch (e) {
-      console.error('initialLoad error:', e);
+    } catch (err) {
+      console.error("initialLoad error:", err);
     } finally {
       setLoading(false);
     }
   };
 
   // ---------------------------
-  // Backup features
+  // Backup / Restore
   // ---------------------------
   const createBackupPayload = () => {
     const now = new Date();
-    const payload = {
-      backup_id: now.toISOString().replace(/[:.]/g, '-'),
+    return {
+      backup_id: now.toISOString().replace(/[:.]/g, "-"),
       timestamp: now.toISOString(),
       users,
       payments,
       customers,
       suppliers
     };
-    return payload;
   };
 
   const manualBackup = async () => {
     try {
       const payload = createBackupPayload();
-      await API.saveData('kpm-backups', payload);
-      // verify by re-reading backups
-      const saved = await refreshTable('kpm-backups');
-      const found = Array.isArray(saved) ? saved.filter(b => b.backup_id === payload.backup_id) : [];
-      if (found.length > 0) {
-        setLastBackup(found[0]);
+      await API.saveData("kpm-backups", payload);
+      // verify by reloading backup list
+      const saved = await refreshTable("kpm-backups");
+      const found = (saved || []).find(b => b.backup_id === payload.backup_id);
+      if (found) {
+        setLastBackup(found);
         alert(`Manual backup completed and verified. Total backups: ${saved.length}`);
       } else {
-        alert('Manual backup attempted but could not be verified. Check logs.');
+        alert("Manual backup attempted but could not be verified. Check logs.");
       }
     } catch (err) {
-      console.error('manualBackup error:', err);
-      alert('Manual backup failed. See console for details.');
+      console.error("manualBackup error:", err);
+      alert("Manual backup failed. See console for details.");
     }
   };
 
   const runAutoBackup = async () => {
     try {
-      const existing = await fetchTable('kpm-backups');
+      const existing = await fetchTable("kpm-backups");
       let latestTs = 0;
       if (Array.isArray(existing) && existing.length > 0) {
         existing.forEach(b => {
@@ -239,34 +266,25 @@ const App = () => {
       const oneDay = 24 * 60 * 60 * 1000;
       if (!latestTs || (now - latestTs) >= oneDay) {
         const payload = createBackupPayload();
-        await API.saveData('kpm-backups', payload);
-        await refreshTable('kpm-backups');
-        console.log('Auto-backup created:', payload.backup_id);
+        await API.saveData("kpm-backups", payload);
+        await refreshTable("kpm-backups");
+        console.log("Auto-backup created:", payload.backup_id);
       } else {
-        console.log('Auto-backup not needed. Last backup at', new Date(latestTs).toISOString());
+        console.log("Auto-backup not needed. Last backup at", new Date(latestTs).toISOString());
       }
     } catch (err) {
-      console.error('runAutoBackup error:', err);
+      console.error("runAutoBackup error:", err);
     }
   };
 
-  // get list of backups (limited)
-  const getBackupsList = async () => {
-    const b = await refreshTable('kpm-backups');
-    return b;
-  };
-
-  // restore a backup by backup_id (admin only)
   const restoreBackup = async (backupId) => {
-    if (!backupId) return alert('Please select a backup to restore.');
-    if (!window.confirm('Restoring will overwrite current data. Continue?')) return;
-
+    if (!backupId) return alert("Please select a backup to restore.");
+    if (!window.confirm("Restoring will overwrite current data. Continue?")) return;
     try {
-      const allBackups = await fetchTable('kpm-backups');
-      const chosen = (allBackups || []).find(b => b.backup_id === backupId);
-      if (!chosen) return alert('Selected backup not found in AWS. Try again.');
-
-      // Overwrite local state immediately for UI responsiveness
+      const all = await fetchTable("kpm-backups");
+      const chosen = (all || []).find(b => b.backup_id === backupId);
+      if (!chosen) return alert("Backup not found on server.");
+      // set UI first
       if (Array.isArray(chosen.users)) setUsers(chosen.users);
       if (Array.isArray(chosen.payments)) {
         const sorted = chosen.payments.slice().sort((a, b) => {
@@ -279,206 +297,199 @@ const App = () => {
       if (Array.isArray(chosen.customers)) setCustomers(chosen.customers);
       if (Array.isArray(chosen.suppliers)) setSuppliers(chosen.suppliers);
 
-      // Persist restored data back to respective tables (overwrite)
-      await saveFullTable('kpm-users', chosen.users || []);
-      await saveFullTable('kpm-payments', chosen.payments || []);
-      await saveFullTable('kpm-customers', chosen.customers || []);
-      await saveFullTable('kpm-suppliers', chosen.suppliers || []);
+      // persist to backend
+      await saveFullTable("kpm-users", chosen.users || []);
+      await saveFullTable("kpm-payments", chosen.payments || []);
+      await saveFullTable("kpm-customers", chosen.customers || []);
+      await saveFullTable("kpm-suppliers", chosen.suppliers || []);
 
-      alert('Restore completed successfully. Data re-synced to AWS.');
-      // refresh backups list too
-      await refreshTable('kpm-backups');
+      alert("Restore completed and data synced to AWS.");
+      await refreshTable("kpm-backups");
     } catch (err) {
-      console.error('restoreBackup error:', err);
-      alert('Restore failed. Check console for details.');
+      console.error("restoreBackup error:", err);
+      alert("Restore failed. Check console logs.");
     }
   };
 
   // ---------------------------
-  // Auth / user flows
+  // Auth & user flows
   // ---------------------------
   const handleLogin = (e) => {
     e.preventDefault();
     if (!loginForm.username || !loginForm.password) {
-      alert('Please enter username and password');
+      alert("Please enter username and password");
       return;
     }
-    const found = users.find(u =>
-      u.username.toLowerCase() === loginForm.username.trim().toLowerCase() &&
-      u.password === loginForm.password
-    );
+    // normalize
+    const username = loginForm.username.trim().toLowerCase();
+    const found = users.find(u => u.username && u.username.toLowerCase() === username && u.password === loginForm.password);
     if (found) {
       setCurrentUser(found);
-      setLoginForm({ username: '', password: '' });
+      setLoginForm({ username: "", password: "" });
     } else {
-      alert('Invalid credentials');
+      alert("Invalid username or password");
     }
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
-    setActiveTab('dashboard');
+    setActiveTab("dashboard");
   };
 
   const handleChangePassword = async (e) => {
     e.preventDefault();
     if (currentUser.password !== passwordForm.oldPassword) {
-      alert('Old password incorrect');
+      alert("Old password incorrect");
       return;
     }
     if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      alert('New passwords do not match');
+      alert("New passwords do not match");
       return;
     }
     if (passwordForm.newPassword.length < 6) {
-      alert('Password must be at least 6 characters');
+      alert("Password must be at least 6 characters");
       return;
     }
-
     const updatedUsers = users.map(u => u.id === currentUser.id ? { ...u, password: passwordForm.newPassword } : u);
     setUsers(updatedUsers);
     setCurrentUser({ ...currentUser, password: passwordForm.newPassword });
-
-    // persist immediately
     try {
-      await saveFullTable('kpm-users', updatedUsers);
-      // optional single-user upsert (if backend supports)
-      try { await API.saveData('kpm-users', { id: currentUser.id, password: passwordForm.newPassword }); } catch(e){/* ignore */ }
-      alert('Password changed and saved to server');
+      await saveFullTable("kpm-users", updatedUsers);
+      // best-effort single update
+      try { await API.saveData("kpm-users", { id: currentUser.id, password: passwordForm.newPassword }); } catch (e) {}
+      alert("Password changed and saved to server");
     } catch (err) {
-      console.error('Password save error:', err);
-      alert('Password changed locally but failed to save to server.');
+      console.error("Password save error:", err);
+      alert("Password changed locally but failed to save to server");
     } finally {
       setShowChangePassword(false);
-      setPasswordForm({ oldPassword: '', newPassword: '', confirmPassword: '' });
+      setPasswordForm({ oldPassword: "", newPassword: "", confirmPassword: "" });
     }
   };
 
   const handleForgotPassword = async (e) => {
     e.preventDefault();
-    if (!resetUsername.trim()) return alert('Enter username');
-    const user = users.find(u => u.username.toLowerCase() === resetUsername.trim().toLowerCase());
-    if (!user) return alert('User not found');
-    if (user.role === 'admin') {
+    if (!resetUsername.trim()) return alert("Enter username");
+    const user = users.find(u => u.username && u.username.toLowerCase() === resetUsername.trim().toLowerCase());
+    if (!user) return alert("User not found");
+    if (user.role === "admin") {
       alert(`Admin user: ${user.username}\nPassword: ${user.password}`);
       return;
     }
-    const newPass = 'manager123';
+    const newPass = "manager123";
     const updatedUsers = users.map(u => u.id === user.id ? { ...u, password: newPass } : u);
     setUsers(updatedUsers);
-    await saveFullTable('kpm-users', updatedUsers);
+    await saveFullTable("kpm-users", updatedUsers);
     alert(`Password reset to ${newPass}. Please change after login.`);
     setShowForgotPassword(false);
-    setResetUsername('');
+    setResetUsername("");
   };
 
   // ---------------------------
-  // CRUD handlers (payments, users, masters)
+  // CRUD handlers
   // ---------------------------
   const openModal = (type, item = null) => {
     setModalType(type);
     setEditingItem(item);
-    if (type === 'payment') {
+    if (type === "payment") {
       if (item) setFormData(item);
-      else setFormData({ type: 'in', handledBy: currentUser ? currentUser.name : '', customerSupplier: '', amount: '', method: 'Cash', category: '', notes: '', date: new Date().toISOString().split('T')[0] });
-    } else if (type === 'user') {
-      setNewUser(item || { username: '', password: '', name: '' });
-    } else if (type === 'customer' || type === 'supplier') {
-      setNewMaster(item || { name: '', phone: '', address: '', gst: '' });
+      else setFormData({ type: "in", handledBy: currentUser ? currentUser.name : "", customerSupplier: "", amount: "", method: "Cash", category: "", notes: "", date: new Date().toISOString().split("T")[0] });
+    } else if (type === "user") {
+      setNewUser(item || { username: "", password: "", name: "" });
+    } else if (type === "customer" || type === "supplier") {
+      setNewMaster(item || { name: "", phone: "", address: "", gst: "" });
     }
     setShowModal(true);
   };
-
   const closeModal = () => { setShowModal(false); setEditingItem(null); };
 
   const handlePaymentSubmit = async (e) => {
     e.preventDefault();
     const payment = {
       ...formData,
-      id: editingItem ? editingItem.id : Date.now(),
+      id: editingItem ? editingItem.id : String(Date.now()),
       enteredBy: currentUser.name,
       enteredById: currentUser.id,
       timestamp: editingItem ? editingItem.timestamp : new Date().toISOString()
     };
-    let newPayments = editingItem ? payments.map(p => p.id === editingItem.id ? payment : p) : [...payments, payment];
-    // update local & persist
+    const newPayments = editingItem ? payments.map(p => p.id === editingItem.id ? payment : p) : [...payments, payment];
     setPayments(newPayments.slice().sort((a,b)=> new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)));
-    await saveFullTable('kpm-payments', newPayments);
+    await saveFullTable("kpm-payments", newPayments);
     closeModal();
   };
 
   const handleDeletePayment = async (id) => {
-    if (!window.confirm('Delete payment?')) return;
+    if (!window.confirm("Delete payment?")) return;
     const newPayments = payments.filter(p => p.id !== id);
     setPayments(newPayments);
-    await saveFullTable('kpm-payments', newPayments);
+    await saveFullTable("kpm-payments", newPayments);
   };
 
   const handleAddUser = async (e) => {
     e.preventDefault();
-    if (!newUser.name || !newUser.username || !newUser.password) return alert('Fill fields');
-    if (users.find(u => u.username === newUser.username && (!editingItem || u.id !== editingItem.id))) return alert('Username exists');
-    if (newUser.password.length < 6) return alert('Password min 6 chars');
-    const user = { id: editingItem ? editingItem.id : Date.now(), username: newUser.username.trim(), password: newUser.password, name: newUser.name.trim(), role: 'manager' };
+    if (!newUser.name || !newUser.username || !newUser.password) return alert("Fill fields");
+    if (users.find(u => u.username === newUser.username && (!editingItem || u.id !== editingItem.id))) return alert("Username exists");
+    if (newUser.password.length < 6) return alert("Password min 6 chars");
+    const user = { id: editingItem ? editingItem.id : String(Date.now()), username: newUser.username.trim(), password: newUser.password, name: newUser.name.trim(), role: "manager" };
     const newUsers = editingItem ? users.map(u => u.id === editingItem.id ? user : u) : [...users, user];
     setUsers(newUsers);
-    await saveFullTable('kpm-users', newUsers);
+    await saveFullTable("kpm-users", newUsers);
     alert(`Manager ${user.username} added.`);
     closeModal();
   };
 
   const handleDeleteUser = async (id) => {
-    if (!window.confirm('Delete user?')) return;
+    if (!window.confirm("Delete user?")) return;
     const newUsers = users.filter(u => u.id !== id);
     setUsers(newUsers);
-    await saveFullTable('kpm-users', newUsers);
+    await saveFullTable("kpm-users", newUsers);
   };
 
   const handleAddMaster = async (e) => {
     e.preventDefault();
-    const master = { ...newMaster, id: editingItem ? editingItem.id : Date.now() };
-    if (modalType === 'customer') {
+    const master = { ...newMaster, id: editingItem ? editingItem.id : String(Date.now()) };
+    if (modalType === "customer") {
       const newCustomers = editingItem ? customers.map(c => c.id === editingItem.id ? master : c) : [...customers, master];
       setCustomers(newCustomers);
-      await saveFullTable('kpm-customers', newCustomers);
+      await saveFullTable("kpm-customers", newCustomers);
     } else {
       const newSuppliers = editingItem ? suppliers.map(s => s.id === editingItem.id ? master : s) : [...suppliers, master];
       setSuppliers(newSuppliers);
-      await saveFullTable('kpm-suppliers', newSuppliers);
+      await saveFullTable("kpm-suppliers", newSuppliers);
     }
     closeModal();
   };
 
   const handleDeleteMaster = async (id, type) => {
-    if (!window.confirm('Delete?')) return;
-    if (type === 'customer') {
+    if (!window.confirm("Delete?")) return;
+    if (type === "customer") {
       const newCustomers = customers.filter(c => c.id !== id);
       setCustomers(newCustomers);
-      await saveFullTable('kpm-customers', newCustomers);
+      await saveFullTable("kpm-customers", newCustomers);
     } else {
       const newSuppliers = suppliers.filter(s => s.id !== id);
       setSuppliers(newSuppliers);
-      await saveFullTable('kpm-suppliers', newSuppliers);
+      await saveFullTable("kpm-suppliers", newSuppliers);
     }
   };
 
   // ---------------------------
-  // Helpers for UI calculations
+  // helpers & UI calcs
   // ---------------------------
   const calculateHolding = (personName) => {
     const list = payments.filter(p => p.handledBy && p.handledBy.toLowerCase() === personName.toLowerCase());
-    const totalIn = list.filter(p => p.type === 'in').reduce((s, x) => s + parseFloat(x.amount || 0), 0);
-    const totalOut = list.filter(p => p.type === 'out').reduce((s, x) => s + parseFloat(x.amount || 0), 0);
+    const totalIn = list.filter(p => p.type === "in").reduce((s, x) => s + parseFloat(x.amount || 0), 0);
+    const totalOut = list.filter(p => p.type === "out").reduce((s, x) => s + parseFloat(x.amount || 0), 0);
     return totalIn - totalOut;
   };
 
   const getAllStaff = () => users.map(u => u.name).sort();
-  const getTotalIn = () => payments.filter(p => p.type === 'in').reduce((s, x) => s + parseFloat(x.amount || 0), 0);
-  const getTotalOut = () => payments.filter(p => p.type === 'out').reduce((s, x) => s + parseFloat(x.amount || 0), 0);
+  const getTotalIn = () => payments.filter(p => p.type === "in").reduce((s, x) => s + parseFloat(x.amount || 0), 0);
+  const getTotalOut = () => payments.filter(p => p.type === "out").reduce((s, x) => s + parseFloat(x.amount || 0), 0);
   const getHolding = () => getTotalIn() - getTotalOut();
 
   // ---------------------------
-  // Render
+  // render
   // ---------------------------
   if (loading) {
     return (
@@ -508,23 +519,23 @@ const App = () => {
             <div className="space-y-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Username</label>
-                <input type="text" value={loginForm.username} onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter username" />
+                <input type="text" value={loginForm.username} onChange={(e)=>setLoginForm({...loginForm, username: e.target.value})} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter username" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
-                <input type="password" value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter password" />
+                <input type="password" value={loginForm.password} onChange={(e)=>setLoginForm({...loginForm, password: e.target.value})} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter password" />
               </div>
               <button onClick={handleLogin} className="w-full bg-green-600 text-white py-3 rounded-lg">Login</button>
-              <button onClick={() => setShowForgotPassword(true)} className="w-full text-blue-600 text-sm">Forgot Password?</button>
+              <button onClick={()=>setShowForgotPassword(true)} className="w-full text-blue-600 text-sm">Forgot Password?</button>
             </div>
           ) : (
             <div className="space-y-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Enter Your Username</label>
-                <input type="text" value={resetUsername} onChange={(e) => setResetUsername(e.target.value)} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter username" />
+                <input type="text" value={resetUsername} onChange={(e)=>setResetUsername(e.target.value)} className="w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Enter username" />
               </div>
               <button onClick={handleForgotPassword} className="w-full bg-green-600 text-white py-3 rounded-lg">Reset Password</button>
-              <button onClick={() => setShowForgotPassword(false)} className="w-full text-gray-600 text-sm">Back to Login</button>
+              <button onClick={()=>{ setShowForgotPassword(false); setResetUsername(""); }} className="w-full text-gray-600 text-sm">Back to Login</button>
             </div>
           )}
         </div>
@@ -532,7 +543,10 @@ const App = () => {
     );
   }
 
-  // Main UI (same structure as earlier; backup tab added)
+  // main UI - truncated here for brevity but uses same markup pattern as v2/v1
+  // (to keep message concise we reuse the same UI used earlier - Dashboard, Masters, Users, Backup & Restore)
+  // Full UI below matches the structure in your previous file and calls above handlers for create/edit/delete/restore.
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="bg-gradient-to-r from-green-600 to-blue-600 text-white p-4 shadow-lg">
@@ -547,7 +561,7 @@ const App = () => {
               <RefreshCw size={18} /> Refresh
             </button>
 
-            {currentUser.role === 'admin' && (
+            {currentUser.role === "admin" && (
               <button onClick={manualBackup} className="flex items-center gap-2 bg-white bg-opacity-20 text-white px-4 py-2 rounded-lg">
                 <Upload size={18} /> Backup Now
               </button>
@@ -565,6 +579,7 @@ const App = () => {
       </div>
 
       <div className="max-w-7xl mx-auto p-4">
+        {/* Dashboard cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white rounded-xl shadow p-6 border-l-4 border-green-500">
             <div className="flex items-center justify-between">
@@ -575,6 +590,7 @@ const App = () => {
               <TrendingUp className="text-green-500" size={32} />
             </div>
           </div>
+
           <div className="bg-white rounded-xl shadow p-6 border-l-4 border-red-500">
             <div className="flex items-center justify-between">
               <div>
@@ -584,6 +600,7 @@ const App = () => {
               <TrendingDown className="text-red-500" size={32} />
             </div>
           </div>
+
           <div className="bg-white rounded-xl shadow p-6 border-l-4 border-blue-500">
             <div className="flex items-center justify-between">
               <div>
@@ -595,21 +612,23 @@ const App = () => {
           </div>
         </div>
 
+        {/* Tabs */}
         <div className="bg-white rounded-xl shadow mb-6">
           <div className="flex border-b overflow-x-auto">
-            <button onClick={() => setActiveTab('dashboard')} className={`px-6 py-3 ${activeTab==='dashboard'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}>Dashboard</button>
-            <button onClick={() => setActiveTab('holdings')} className={`px-6 py-3 ${activeTab==='holdings'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}>Holdings</button>
-            <button onClick={() => setActiveTab('masters')} className={`px-6 py-3 ${activeTab==='masters'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><BookOpen size={18} className="inline mr-2" /> Masters</button>
-            {currentUser.role === 'admin' && <button onClick={() => setActiveTab('users')} className={`px-6 py-3 ${activeTab==='users'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><Users size={18} className="inline mr-2" /> Users</button>}
-            {currentUser.role === 'admin' && <button onClick={() => setActiveTab('backup')} className={`px-6 py-3 ${activeTab==='backup'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><Cloud size={18} className="inline mr-2" /> Backup & Restore</button>}
+            <button onClick={() => setActiveTab("dashboard")} className={`px-6 py-3 ${activeTab==='dashboard'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}>Dashboard</button>
+            <button onClick={() => setActiveTab("holdings")} className={`px-6 py-3 ${activeTab==='holdings'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}>Holdings</button>
+            <button onClick={() => setActiveTab("masters")} className={`px-6 py-3 ${activeTab==='masters'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><BookOpen size={18} className="inline mr-2" /> Masters</button>
+            {currentUser.role === "admin" && <button onClick={() => setActiveTab("users")} className={`px-6 py-3 ${activeTab==='users'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><Users size={18} className="inline mr-2" /> Users</button>}
+            {currentUser.role === "admin" && <button onClick={() => setActiveTab("backup")} className={`px-6 py-3 ${activeTab==='backup'?'border-b-2 border-green-600 text-green-600':'text-gray-600'}`}><Cloud size={18} className="inline mr-2" /> Backup & Restore</button>}
           </div>
 
           <div className="p-6">
-            {activeTab === 'dashboard' && (
+            {/* Dashboard content */}
+            {activeTab === "dashboard" && (
               <div>
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-xl font-bold">All Payments</h2>
-                  <button onClick={() => openModal('payment')} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Payment</button>
+                  <button onClick={() => openModal("payment")} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Payment</button>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -633,20 +652,20 @@ const App = () => {
                           <td className="px-4 py-3 text-sm">{payment.date}</td>
                           <td className="px-4 py-3">
                             <span className={`px-2 py-1 rounded text-xs font-semibold ${payment.type==='in'?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}`}>
-                              {payment.type === 'in' ? 'IN' : 'OUT'}
+                              {payment.type === "in" ? "IN" : "OUT"}
                             </span>
                           </td>
                           <td className="px-4 py-3 text-sm font-bold text-blue-600">{payment.handledBy}</td>
-                          <td className="px-4 py-3 text-sm">{payment.customerSupplier || '-'}</td>
+                          <td className="px-4 py-3 text-sm">{payment.customerSupplier || "-"}</td>
                           <td className="px-4 py-3 text-sm font-bold">₹{parseFloat(payment.amount || 0).toFixed(2)}</td>
                           <td className="px-4 py-3 text-sm">{payment.method}</td>
-                          <td className="px-4 py-3 text-sm">{payment.category || '-'}</td>
+                          <td className="px-4 py-3 text-sm">{payment.category || "-"}</td>
                           <td className="px-4 py-3 text-sm text-gray-600">{payment.enteredBy}</td>
                           <td className="px-4 py-3">
                             <div className="flex gap-2">
-                              {(currentUser.role === 'admin' || currentUser.id === payment.enteredById) && (
+                              {(currentUser.role === "admin" || currentUser.id === payment.enteredById) && (
                                 <>
-                                  <button onClick={() => openModal('payment', payment)} className="text-blue-600 hover:text-blue-800"><Edit2 size={16} /></button>
+                                  <button onClick={() => openModal("payment", payment)} className="text-blue-600 hover:text-blue-800"><Edit2 size={16} /></button>
                                   <button onClick={() => handleDeletePayment(payment.id)} className="text-red-600 hover:text-red-800"><Trash2 size={16} /></button>
                                 </>
                               )}
@@ -661,7 +680,8 @@ const App = () => {
               </div>
             )}
 
-            {activeTab === 'holdings' && (
+            {/* Holders */}
+            {activeTab === "holdings" && (
               <div>
                 <h2 className="text-xl font-bold mb-4">Staff Holdings</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -670,8 +690,8 @@ const App = () => {
                     return (
                       <div key={person} className="bg-gradient-to-br from-white to-gray-50 rounded-xl shadow p-6 border">
                         <h3 className="font-bold text-lg mb-2">{person}</h3>
-                        <p className={`text-3xl font-bold ${holding >= 0 ? 'text-green-600' : 'text-red-600'}`}>₹{holding.toFixed(2)}</p>
-                        <p className="text-sm text-gray-600 mt-2">{holding >= 0 ? 'Current Holding' : 'Negative Balance'}</p>
+                        <p className={`text-3xl font-bold ${holding >= 0 ? "text-green-600" : "text-red-600"}`}>₹{holding.toFixed(2)}</p>
+                        <p className="text-sm text-gray-600 mt-2">{holding >= 0 ? "Current Holding" : "Negative Balance"}</p>
                       </div>
                     );
                   })}
@@ -679,13 +699,14 @@ const App = () => {
               </div>
             )}
 
-            {activeTab === 'masters' && (
+            {/* Masters */}
+            {activeTab === "masters" && (
               <div>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <div>
                     <div className="flex justify-between items-center mb-4">
                       <h2 className="text-xl font-bold">Customers</h2>
-                      <button onClick={() => openModal('customer')} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Customer</button>
+                      <button onClick={() => openModal("customer")} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Customer</button>
                     </div>
                     <div className="space-y-3">
                       {customers.map(customer => (
@@ -698,8 +719,8 @@ const App = () => {
                               {customer.gst && <p className="text-sm text-gray-600">🔢 GST: {customer.gst}</p>}
                             </div>
                             <div className="flex gap-2">
-                              <button onClick={() => openModal('customer', customer)} className="text-blue-600"><Edit2 size={16} /></button>
-                              <button onClick={() => handleDeleteMaster(customer.id, 'customer')} className="text-red-600"><Trash2 size={16} /></button>
+                              <button onClick={() => openModal("customer", customer)} className="text-blue-600"><Edit2 size={16} /></button>
+                              <button onClick={() => handleDeleteMaster(customer.id, "customer")} className="text-red-600"><Trash2 size={16} /></button>
                             </div>
                           </div>
                         </div>
@@ -711,7 +732,7 @@ const App = () => {
                   <div>
                     <div className="flex justify-between items-center mb-4">
                       <h2 className="text-xl font-bold">Suppliers</h2>
-                      <button onClick={() => openModal('supplier')} className="bg-blue-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Supplier</button>
+                      <button onClick={() => openModal("supplier")} className="bg-blue-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Supplier</button>
                     </div>
                     <div className="space-y-3">
                       {suppliers.map(supplier => (
@@ -724,8 +745,8 @@ const App = () => {
                               {supplier.gst && <p className="text-sm text-gray-600">🔢 GST: {supplier.gst}</p>}
                             </div>
                             <div className="flex gap-2">
-                              <button onClick={() => openModal('supplier', supplier)} className="text-blue-600"><Edit2 size={16} /></button>
-                              <button onClick={() => handleDeleteMaster(supplier.id, 'supplier')} className="text-red-600"><Trash2 size={16} /></button>
+                              <button onClick={() => openModal("supplier", supplier)} className="text-blue-600"><Edit2 size={16} /></button>
+                              <button onClick={() => handleDeleteMaster(supplier.id, "supplier")} className="text-red-600"><Trash2 size={16} /></button>
                             </div>
                           </div>
                         </div>
@@ -737,11 +758,12 @@ const App = () => {
               </div>
             )}
 
-            {activeTab === 'users' && currentUser.role === 'admin' && (
+            {/* Users */}
+            {activeTab === "users" && currentUser.role === "admin" && (
               <div>
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-xl font-bold">User Management</h2>
-                  <button onClick={() => openModal('user')} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Manager</button>
+                  <button onClick={() => openModal("user")} className="bg-green-600 text-white px-4 py-2 rounded-lg"><Plus size={18} /> Add Manager</button>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {users.map(user => (
@@ -751,11 +773,11 @@ const App = () => {
                           <h3 className="font-bold text-lg">{user.name}</h3>
                           <p className="text-sm text-gray-600">@{user.username}</p>
                         </div>
-                        <span className={`px-2 py-1 rounded text-xs font-semibold ${user.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{user.role.toUpperCase()}</span>
+                        <span className={`px-2 py-1 rounded text-xs font-semibold ${user.role === "admin" ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"}`}>{user.role.toUpperCase()}</span>
                       </div>
-                      {user.role === 'manager' && (
+                      {user.role === "manager" && (
                         <div className="flex gap-2">
-                          <button onClick={() => openModal('user', user)} className="flex-1 bg-blue-50 text-blue-600 px-3 py-2 rounded">Edit</button>
+                          <button onClick={() => openModal("user", user)} className="flex-1 bg-blue-50 text-blue-600 px-3 py-2 rounded">Edit</button>
                           <button onClick={() => handleDeleteUser(user.id)} className="flex-1 bg-red-50 text-red-600 px-3 py-2 rounded">Delete</button>
                         </div>
                       )}
@@ -765,20 +787,19 @@ const App = () => {
               </div>
             )}
 
-            {activeTab === 'backup' && currentUser.role === 'admin' && (
+            {/* Backup & Restore */}
+            {activeTab === "backup" && currentUser.role === "admin" && (
               <div>
                 <h2 className="text-xl font-bold mb-4">Backup & Restore</h2>
                 <div className="bg-white rounded-xl p-6 shadow mb-4">
                   <p className="text-sm text-gray-600">Backups are stored daily to the <code>kpm-backups</code> table in AWS.</p>
-
                   <div className="mt-4 flex gap-3">
                     <button onClick={manualBackup} className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2"><Upload size={16} /> Manual Backup Now</button>
-                    <button onClick={async () => { await refreshTable('kpm-backups'); alert(`Backups found: ${backups.length}`); }} className="bg-gray-100 px-4 py-2 rounded-lg">Check Backups</button>
+                    <button onClick={async ()=>{ await refreshTable("kpm-backups"); alert(`Backups found: ${backups.length}`); }} className="bg-gray-100 px-4 py-2 rounded-lg">Check Backups</button>
                   </div>
-
                   <div className="mt-4">
                     <p className="text-sm text-gray-700">Last Backup:</p>
-                    <p className="font-medium">{lastBackup ? new Date(lastBackup.timestamp).toLocaleString() : 'No backups yet'}</p>
+                    <p className="font-medium">{lastBackup ? new Date(lastBackup.timestamp).toLocaleString() : "No backups yet"}</p>
                   </div>
                 </div>
 
@@ -789,12 +810,8 @@ const App = () => {
                       <option value="">Select a backup</option>
                       {backups.map(b => <option key={b.backup_id} value={b.backup_id}>{b.backup_id} — {new Date(b.timestamp).toLocaleString()}</option>)}
                     </select>
-                    <button onClick={() => {
-                      const sel = document.getElementById('backup-select').value;
-                      if (!sel) return alert('Select a backup first');
-                      restoreBackup(sel);
-                    }} className="bg-blue-600 text-white px-4 py-2 rounded">Restore</button>
-                    <button onClick={() => { refreshTable('kpm-backups'); alert('Backups refreshed'); }} className="bg-gray-100 px-4 py-2 rounded">Refresh List</button>
+                    <button onClick={() => { const sel = document.getElementById("backup-select").value; if (!sel) return alert("Select a backup first"); restoreBackup(sel); }} className="bg-blue-600 text-white px-4 py-2 rounded">Restore</button>
+                    <button onClick={() => { refreshTable("kpm-backups"); alert("Backups refreshed"); }} className="bg-gray-100 px-4 py-2 rounded">Refresh List</button>
                   </div>
                   <p className="text-sm text-gray-500 mt-3">Restoring will overwrite current tables. Use carefully.</p>
                 </div>
@@ -805,27 +822,28 @@ const App = () => {
         </div>
       </div>
 
-      {/* Modals: Payment, Master, User, Change Password (same structure as previous version) */}
-      {showModal && modalType === 'payment' && (
+      {/* Modals (payment/customer/supplier/user/change password) - same as earlier handlers */}
+      {/* Payment modal */}
+      {showModal && modalType === "payment" && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl my-8">
             <div className="bg-gradient-to-r from-green-600 to-blue-600 text-white p-6 rounded-t-2xl flex justify-between items-center">
-              <h3 className="text-2xl font-bold">{editingItem ? 'Edit Payment' : 'Add New Payment'}</h3>
+              <h3 className="text-2xl font-bold">{editingItem ? "Edit Payment" : "Add New Payment"}</h3>
               <button onClick={closeModal} className="text-white"><X size={28} /></button>
             </div>
             <div className="p-8">
+              {/* form inputs (same layout) */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* form fields same as before */}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Payment Type *</label>
-                  <select value={formData.type} onChange={(e) => setFormData({ ...formData, type: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl">
+                  <select value={formData.type} onChange={(e)=>setFormData({...formData, type:e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
                     <option value="in">Payment In</option>
                     <option value="out">Payment Out</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Handled By *</label>
-                  <select value={formData.handledBy} onChange={(e) => setFormData({ ...formData, handledBy: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl">
+                  <select value={formData.handledBy} onChange={(e)=>setFormData({...formData, handledBy: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
                     <option value="">Select staff</option>
                     {users.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
                   </select>
@@ -833,7 +851,7 @@ const App = () => {
 
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">{formData.type==='in' ? 'Customer (optional)' : 'Supplier (optional)'}</label>
-                  <select value={formData.customerSupplier} onChange={(e)=>setFormData({...formData, customerSupplier: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
+                  <select value={formData.customerSupplier} onChange={(e)=>setFormData({...formData, customerSupplier:e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
                     <option value="">Select or leave blank</option>
                     {formData.type==='in' ? customers.map(c=> <option key={c.id} value={c.name}>{c.name}</option>) : suppliers.map(s=> <option key={s.id} value={s.name}>{s.name}</option>)}
                   </select>
@@ -852,7 +870,7 @@ const App = () => {
                   </select>
                 </div>
 
-                {formData.type === 'out' && (
+                {formData.type === "out" && (
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Category *</label>
                     <select value={formData.category} onChange={(e)=>setFormData({...formData, category: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
@@ -875,7 +893,7 @@ const App = () => {
 
               <div className="flex gap-4 mt-8">
                 <button onClick={closeModal} className="flex-1 bg-gray-200 py-4 rounded-xl">Cancel</button>
-                <button onClick={handlePaymentSubmit} className="flex-1 bg-gradient-to-r from-green-600 to-blue-600 text-white py-4 rounded-xl">{editingItem ? 'Update' : 'Add Payment'}</button>
+                <button onClick={handlePaymentSubmit} className="flex-1 bg-gradient-to-r from-green-600 to-blue-600 text-white py-4 rounded-xl">{editingItem ? "Update" : "Add Payment"}</button>
               </div>
             </div>
           </div>
@@ -883,35 +901,35 @@ const App = () => {
       )}
 
       {/* Customer/Supplier modal */}
-      {showModal && (modalType === 'customer' || modalType === 'supplier') && (
+      {showModal && (modalType === "customer" || modalType === "supplier") && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">{editingItem ? 'Edit' : 'Add'} {modalType === 'customer' ? 'Customer' : 'Supplier'}</h3>
+              <h3 className="text-xl font-bold">{editingItem ? "Edit" : "Add"} {modalType === "customer" ? "Customer" : "Supplier"}</h3>
               <button onClick={closeModal} className="text-gray-500"><X size={24} /></button>
             </div>
 
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
-                <input type="text" value={newMaster.name} onChange={(e)=>setNewMaster({...newMaster, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="Name" />
+                <input type="text" value={newMaster.name} onChange={(e)=>setNewMaster({...newMaster, name:e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="Name" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-                <input type="text" value={newMaster.phone} onChange={(e)=>setNewMaster({...newMaster, phone: e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="Phone" />
+                <input type="text" value={newMaster.phone} onChange={(e)=>setNewMaster({...newMaster, phone:e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="Phone" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
-                <textarea value={newMaster.address} onChange={(e)=>setNewMaster({...newMaster, address: e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows={2} placeholder="Address" />
+                <textarea value={newMaster.address} onChange={(e)=>setNewMaster({...newMaster, address:e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows={2} placeholder="Address" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">GST</label>
-                <input type="text" value={newMaster.gst} onChange={(e)=>setNewMaster({...newMaster, gst: e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="GST" />
+                <input type="text" value={newMaster.gst} onChange={(e)=>setNewMaster({...newMaster, gst:e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="GST" />
               </div>
 
               <div className="flex gap-3 mt-4">
                 <button onClick={closeModal} className="flex-1 bg-gray-200 py-2 rounded-lg">Cancel</button>
-                <button onClick={handleAddMaster} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? 'Update' : 'Add'}</button>
+                <button onClick={handleAddMaster} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? "Update" : "Add"}</button>
               </div>
             </div>
           </div>
@@ -919,30 +937,30 @@ const App = () => {
       )}
 
       {/* User modal */}
-      {showModal && modalType === 'user' && (
+      {showModal && modalType === "user" && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">{editingItem ? 'Edit Manager' : 'Add Manager'}</h3>
+              <h3 className="text-xl font-bold">{editingItem ? "Edit Manager" : "Add Manager"}</h3>
               <button onClick={closeModal} className="text-gray-500"><X size={24} /></button>
             </div>
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
-                <input type="text" value={newUser.name} onChange={(e)=>setNewUser({...newUser, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                <input type="text" value={newUser.name} onChange={(e)=>setNewUser({...newUser, name:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-                <input type="text" value={newUser.username} onChange={(e)=>setNewUser({...newUser, username: e.target.value})} disabled={!!editingItem} className="w-full px-3 py-2 border rounded-lg" />
+                <input type="text" value={newUser.username} onChange={(e)=>setNewUser({...newUser, username:e.target.value})} disabled={!!editingItem} className="w-full px-3 py-2 border rounded-lg" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                <input type="password" value={newUser.password} onChange={(e)=>setNewUser({...newUser, password: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                <input type="password" value={newUser.password} onChange={(e)=>setNewUser({...newUser, password:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
 
               <div className="flex gap-3 mt-4">
                 <button onClick={closeModal} className="flex-1 bg-gray-200 py-2 rounded-lg">Cancel</button>
-                <button onClick={handleAddUser} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? 'Update' : 'Add Manager'}</button>
+                <button onClick={handleAddUser} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? "Update" : "Add Manager"}</button>
               </div>
             </div>
           </div>
@@ -960,15 +978,15 @@ const App = () => {
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Old Password</label>
-                <input type="password" value={passwordForm.oldPassword} onChange={(e)=>setPasswordForm({...passwordForm, oldPassword: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                <input type="password" value={passwordForm.oldPassword} onChange={(e)=>setPasswordForm({...passwordForm, oldPassword:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
-                <input type="password" value={passwordForm.newPassword} onChange={(e)=>setPasswordForm({...passwordForm, newPassword: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                <input type="password" value={passwordForm.newPassword} onChange={(e)=>setPasswordForm({...passwordForm, newPassword:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
-                <input type="password" value={passwordForm.confirmPassword} onChange={(e)=>setPasswordForm({...passwordForm, confirmPassword: e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+                <input type="password" value={passwordForm.confirmPassword} onChange={(e)=>setPasswordForm({...passwordForm, confirmPassword:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
               </div>
 
               <div className="flex gap-3 mt-4">
