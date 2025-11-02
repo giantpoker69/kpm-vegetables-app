@@ -1,8 +1,17 @@
+<<<<<<< HEAD
 
 // src/App.js
 import React, { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Edit2, LogOut, Users, DollarSign, TrendingUp,
   TrendingDown, X, BookOpen, Key, Lock, Cloud, RefreshCw, Upload } from "lucide-react";
+=======
+// src/App.js
+import React, { useState, useEffect, useRef } from "react";
+import {
+  Plus, Trash2, Edit2, LogOut, Users, DollarSign, TrendingUp,
+  TrendingDown, X, BookOpen, Key, Lock, Cloud, RefreshCw, Upload
+} from "lucide-react";
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
 import { API } from "./config";
 
 /*
@@ -15,7 +24,10 @@ import { API } from "./config";
   - Payments sorted newest-first
 */
 
+<<<<<<< HEAD
 // Default admins
+=======
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
 const DEFAULT_ADMINS = [
   { id: "1", username: "PARTHI", password: "parthi123", role: "admin", name: "Parthi" },
   { id: "2", username: "PRABU", password: "prabu123", role: "admin", name: "Prabu" }
@@ -43,6 +55,10 @@ const App = () => {
   const [resetUsername, setResetUsername] = useState("");
   const [loading, setLoading] = useState(true);
 
+<<<<<<< HEAD
+=======
+  // forms
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
   const [formData, setFormData] = useState({
     type: "in",
     handledBy: "",
@@ -59,6 +75,10 @@ const App = () => {
   const paymentMethods = ["Cash", "Bank Transfer", "UPI"];
   const payoutCategories = ["Supplier", "Salary", "Savings", "Share", "Expenses", "Transport", "Extra"];
 
+<<<<<<< HEAD
+=======
+  // interval ref for auto backup
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
   const autoBackupRef = useRef(null);
 
   // ---------------------------
@@ -66,8 +86,13 @@ const App = () => {
   // ---------------------------
   const fetchTable = async (table) => {
     try {
+<<<<<<< HEAD
       const path = `data?table=${encodeURIComponent(table)}`;
       const result = await API.getData(path);
+=======
+      const result = await API.getData(`data?table=${encodeURIComponent(table)}`.replace("data?table=", "data?table=")); 
+      // Many backends return array directly; normalize
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       if (!result) return [];
       return Array.isArray(result) ? result : (result.items || [result]);
     } catch (err) {
@@ -76,11 +101,22 @@ const App = () => {
     }
   };
 
+<<<<<<< HEAD
   const saveFullTable = async (table, items) => {
     try {
       const bulkPayload = { __bulk: true, items };
       const resp = await API.saveData(table, bulkPayload);
       if (resp && resp.error) throw new Error(resp.error);
+=======
+  // Save entire table with bulk payload attempt, fallback to per-item upserts
+  const saveFullTable = async (table, items) => {
+    try {
+      // Try a bulk hint first — backend may accept this shape
+      const bulkPayload = { __bulk: true, items };
+      const resp = await API.saveData(table, bulkPayload);
+      if (resp && resp.error) throw new Error(resp.error);
+      // re-fetch to confirm
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       await refreshTable(table);
       return resp;
     } catch (err) {
@@ -97,6 +133,10 @@ const App = () => {
     }
   };
 
+<<<<<<< HEAD
+=======
+  // refresh/repull a single table and update local state
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
   const refreshTable = async (table) => {
     if (table === "kpm-users") {
       const u = await fetchTable("kpm-users");
@@ -145,14 +185,26 @@ const App = () => {
       await initialLoad();
       autoBackupRef.current = setInterval(() => {
         runAutoBackup().catch(e => console.error("Auto backup error:", e));
+<<<<<<< HEAD
       }, 24 * 60 * 60 * 1000);
     })();
     return () => clearInterval(autoBackupRef.current);
+=======
+      }, 24 * 60 * 60 * 1000); // 24h
+    })();
+    return () => clearInterval(autoBackupRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
   }, []);
 
   const initialLoad = async () => {
     try {
       setLoading(true);
+<<<<<<< HEAD
+=======
+
+      // fetch all tables in parallel
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       const [u, p, c, s, b] = await Promise.all([
         fetchTable("kpm-users"),
         fetchTable("kpm-payments"),
@@ -161,19 +213,34 @@ const App = () => {
         fetchTable("kpm-backups")
       ]);
 
+<<<<<<< HEAD
       if (!Array.isArray(u) || u.length === 0) {
         console.warn("No users found in AWS. Auto-creating default admin users...");
+=======
+      // If users is empty on AWS, auto-create default admins
+      if (!Array.isArray(u) || u.length === 0) {
+        console.warn("No users found in AWS. Auto-creating default admin users...");
+        // attempt to save default admins
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
         try {
           await saveFullTable("kpm-users", DEFAULT_ADMINS);
           setUsers(DEFAULT_ADMINS.slice());
         } catch (e) {
           console.error("Failed to create default admins:", e);
+<<<<<<< HEAD
+=======
+          // still keep local defaults so login can work
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
           setUsers(DEFAULT_ADMINS.slice());
         }
       } else {
         setUsers(u);
       }
 
+<<<<<<< HEAD
+=======
+      // payments
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       if (Array.isArray(p)) {
         const sorted = p.slice().sort((a, b) => {
           const ta = a.timestamp ? new Date(a.timestamp).getTime() : new Date(a.date || 0).getTime();
@@ -196,6 +263,10 @@ const App = () => {
         setLastBackup(sortedB[0] || null);
       }
 
+<<<<<<< HEAD
+=======
+      // run immediate auto-backup check
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       await runAutoBackup();
     } catch (err) {
       console.error("initialLoad error:", err);
@@ -223,6 +294,10 @@ const App = () => {
     try {
       const payload = createBackupPayload();
       await API.saveData("kpm-backups", payload);
+<<<<<<< HEAD
+=======
+      // verify by reloading backup list
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       const saved = await refreshTable("kpm-backups");
       const found = (saved || []).find(b => b.backup_id === payload.backup_id);
       if (found) {
@@ -269,6 +344,10 @@ const App = () => {
       const all = await fetchTable("kpm-backups");
       const chosen = (all || []).find(b => b.backup_id === backupId);
       if (!chosen) return alert("Backup not found on server.");
+<<<<<<< HEAD
+=======
+      // set UI first
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       if (Array.isArray(chosen.users)) setUsers(chosen.users);
       if (Array.isArray(chosen.payments)) {
         const sorted = chosen.payments.slice().sort((a, b) => {
@@ -281,6 +360,10 @@ const App = () => {
       if (Array.isArray(chosen.customers)) setCustomers(chosen.customers);
       if (Array.isArray(chosen.suppliers)) setSuppliers(chosen.suppliers);
 
+<<<<<<< HEAD
+=======
+      // persist to backend
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       await saveFullTable("kpm-users", chosen.users || []);
       await saveFullTable("kpm-payments", chosen.payments || []);
       await saveFullTable("kpm-customers", chosen.customers || []);
@@ -303,6 +386,10 @@ const App = () => {
       alert("Please enter username and password");
       return;
     }
+<<<<<<< HEAD
+=======
+    // normalize
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
     const username = loginForm.username.trim().toLowerCase();
     const found = users.find(u => u.username && u.username.toLowerCase() === username && u.password === loginForm.password);
     if (found) {
@@ -337,6 +424,10 @@ const App = () => {
     setCurrentUser({ ...currentUser, password: passwordForm.newPassword });
     try {
       await saveFullTable("kpm-users", updatedUsers);
+<<<<<<< HEAD
+=======
+      // best-effort single update
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
       try { await API.saveData("kpm-users", { id: currentUser.id, password: passwordForm.newPassword }); } catch (e) {}
       alert("Password changed and saved to server");
     } catch (err) {
@@ -524,7 +615,14 @@ const App = () => {
     );
   }
 
+<<<<<<< HEAD
   // Main UI below (same as earlier v3, full layout)
+=======
+  // main UI - truncated here for brevity but uses same markup pattern as v2/v1
+  // (to keep message concise we reuse the same UI used earlier - Dashboard, Masters, Users, Backup & Restore)
+  // Full UI below matches the structure in your previous file and calls above handlers for create/edit/delete/restore.
+
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="bg-gradient-to-r from-green-600 to-blue-600 text-white p-4 shadow-lg">
@@ -800,7 +898,186 @@ const App = () => {
         </div>
       </div>
 
+<<<<<<< HEAD
       {/* Modals omitted for brevity in zip (UI code present in original project) */}
+=======
+      {/* Modals (payment/customer/supplier/user/change password) - same as earlier handlers */}
+      {/* Payment modal */}
+      {showModal && modalType === "payment" && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl my-8">
+            <div className="bg-gradient-to-r from-green-600 to-blue-600 text-white p-6 rounded-t-2xl flex justify-between items-center">
+              <h3 className="text-2xl font-bold">{editingItem ? "Edit Payment" : "Add New Payment"}</h3>
+              <button onClick={closeModal} className="text-white"><X size={28} /></button>
+            </div>
+            <div className="p-8">
+              {/* form inputs (same layout) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Payment Type *</label>
+                  <select value={formData.type} onChange={(e)=>setFormData({...formData, type:e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
+                    <option value="in">Payment In</option>
+                    <option value="out">Payment Out</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Handled By *</label>
+                  <select value={formData.handledBy} onChange={(e)=>setFormData({...formData, handledBy: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
+                    <option value="">Select staff</option>
+                    {users.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">{formData.type==='in' ? 'Customer (optional)' : 'Supplier (optional)'}</label>
+                  <select value={formData.customerSupplier} onChange={(e)=>setFormData({...formData, customerSupplier:e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
+                    <option value="">Select or leave blank</option>
+                    {formData.type==='in' ? customers.map(c=> <option key={c.id} value={c.name}>{c.name}</option>) : suppliers.map(s=> <option key={s.id} value={s.name}>{s.name}</option>)}
+                  </select>
+                  <input type="text" value={formData.customerSupplier} onChange={(e)=>setFormData({...formData, customerSupplier: e.target.value})} className="w-full mt-2 px-4 py-3 border-2 rounded-xl" placeholder="Or type name manually" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Amount (₹) *</label>
+                  <input type="number" step="0.01" value={formData.amount} onChange={(e)=>setFormData({...formData, amount: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Method *</label>
+                  <select value={formData.method} onChange={(e)=>setFormData({...formData, method: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
+                    {paymentMethods.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+
+                {formData.type === "out" && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Category *</label>
+                    <select value={formData.category} onChange={(e)=>setFormData({...formData, category: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl">
+                      <option value="">Select category</option>
+                      {payoutCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Date</label>
+                  <input type="date" value={formData.date} onChange={(e)=>setFormData({...formData, date: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl" />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Notes</label>
+                  <textarea value={formData.notes} onChange={(e)=>setFormData({...formData, notes: e.target.value})} className="w-full px-4 py-3 border-2 rounded-xl" rows={3} />
+                </div>
+              </div>
+
+              <div className="flex gap-4 mt-8">
+                <button onClick={closeModal} className="flex-1 bg-gray-200 py-4 rounded-xl">Cancel</button>
+                <button onClick={handlePaymentSubmit} className="flex-1 bg-gradient-to-r from-green-600 to-blue-600 text-white py-4 rounded-xl">{editingItem ? "Update" : "Add Payment"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Customer/Supplier modal */}
+      {showModal && (modalType === "customer" || modalType === "supplier") && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold">{editingItem ? "Edit" : "Add"} {modalType === "customer" ? "Customer" : "Supplier"}</h3>
+              <button onClick={closeModal} className="text-gray-500"><X size={24} /></button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+                <input type="text" value={newMaster.name} onChange={(e)=>setNewMaster({...newMaster, name:e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="Name" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                <input type="text" value={newMaster.phone} onChange={(e)=>setNewMaster({...newMaster, phone:e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="Phone" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
+                <textarea value={newMaster.address} onChange={(e)=>setNewMaster({...newMaster, address:e.target.value})} className="w-full px-3 py-2 border rounded-lg" rows={2} placeholder="Address" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">GST</label>
+                <input type="text" value={newMaster.gst} onChange={(e)=>setNewMaster({...newMaster, gst:e.target.value})} className="w-full px-3 py-2 border rounded-lg" placeholder="GST" />
+              </div>
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={closeModal} className="flex-1 bg-gray-200 py-2 rounded-lg">Cancel</button>
+                <button onClick={handleAddMaster} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? "Update" : "Add"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* User modal */}
+      {showModal && modalType === "user" && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold">{editingItem ? "Edit Manager" : "Add Manager"}</h3>
+              <button onClick={closeModal} className="text-gray-500"><X size={24} /></button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                <input type="text" value={newUser.name} onChange={(e)=>setNewUser({...newUser, name:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                <input type="text" value={newUser.username} onChange={(e)=>setNewUser({...newUser, username:e.target.value})} disabled={!!editingItem} className="w-full px-3 py-2 border rounded-lg" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input type="password" value={newUser.password} onChange={(e)=>setNewUser({...newUser, password:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+              </div>
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={closeModal} className="flex-1 bg-gray-200 py-2 rounded-lg">Cancel</button>
+                <button onClick={handleAddUser} className="flex-1 bg-green-600 text-white py-2 rounded-lg">{editingItem ? "Update" : "Add Manager"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change password modal */}
+      {showChangePassword && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold flex items-center gap-2"><Lock size={24} className="text-green-600" /> Change Password</h3>
+              <button onClick={() => setShowChangePassword(false)} className="text-gray-500"><X size={24} /></button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Old Password</label>
+                <input type="password" value={passwordForm.oldPassword} onChange={(e)=>setPasswordForm({...passwordForm, oldPassword:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+                <input type="password" value={passwordForm.newPassword} onChange={(e)=>setPasswordForm({...passwordForm, newPassword:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
+                <input type="password" value={passwordForm.confirmPassword} onChange={(e)=>setPasswordForm({...passwordForm, confirmPassword:e.target.value})} className="w-full px-3 py-2 border rounded-lg" />
+              </div>
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={() => setShowChangePassword(false)} className="flex-1 bg-gray-200 py-2 rounded-lg">Cancel</button>
+                <button onClick={handleChangePassword} className="flex-1 bg-green-600 text-white py-2 rounded-lg">Change Password</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
     </div>
   );
 };

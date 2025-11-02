@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 version: 1
 applications:
@@ -16,3 +17,21 @@ applications:
       cache:
         paths:
           - node_modules/**/*
+=======
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - npm install
+    build:
+      commands:
+        - npm run build
+  artifacts:
+    baseDirectory: build
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - node_modules/**/*
+>>>>>>> 01a218b02226c3fea1d954794db6943aa4d30da1
